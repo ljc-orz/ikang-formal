@@ -1,0 +1,43 @@
+seed: 2026
+
+data:
+  train_split: train
+  validation_split: internal_validation
+  image_size: 224
+  mean: [0.485, 0.456, 0.406]
+  std: [0.229, 0.224, 0.225]
+  shuffle_buffer: 1000
+  num_workers: 8
+
+model:
+  name: convnext_tiny.fb_in22k_ft_in1k
+  pretrained: true
+  pretrained_weights: pretrained-weights/convnext_tiny.fb_in22k_ft_in1k/pytorch_model.bin
+  drop_path_rate: 0.1
+  metadata_hidden_dim: 16
+  classifier_dropout: 0.2
+
+training:
+  max_epochs: 30
+  batch_size: 64
+  gradient_accumulation_steps: 2
+  backbone_lr: 1.0e-4
+  head_lr: 3.0e-4
+  weight_decay: 0.05
+  gradient_clip_norm: 1.0
+  amp: fp16
+  early_stopping_patience: 6
+  early_stopping_min_delta: 0.001
+
+loss:
+  pos_weight: auto
+  max_pos_weight: 10.0
+
+scheduler:
+  warmup_epochs: 1
+  min_lr: 1.0e-6
+
+checkpoint:
+  primary_metric: val_auprc
+  secondary_metric: val_auroc
+  mode: max

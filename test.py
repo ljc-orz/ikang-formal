@@ -1,14 +1,8 @@
-from src.data import FundusWebDataset
+#!/usr/bin/env python3
+"""Compatibility entry point for paired-eye checkpoint evaluation."""
 
-dataset = FundusWebDataset(
-    "example/webdataset",
-    "train",
-    "result_alt",
-)
+from evaluate import main
 
-for image, age, sex, result in dataset:
-    # image: torch.uint8，[3, H, W]
-    # age: int
-    # sex: MAN=0，WOMAN=1
-    # result: 0/1，缺失时为 -1
-    pass
+
+if __name__ == "__main__":
+    raise SystemExit(main())

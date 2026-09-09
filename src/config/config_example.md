@@ -16,7 +16,7 @@ training:
   max_epochs: 30
   global_batch_size: 128
   optimizer: AdamW
-  mixed_precision: true
+  mixed_precision: fp16
   gradient_clip_norm: 1.0
   early_stopping_patience: 6
 

@@ -37,6 +37,7 @@ class FundusWebDataset(IterableDataset):
             adjacent and in that order. Defaults to ``False``.
         shuffle_buffer: Number of patient samples buffered for shuffling.
         seed: Shuffle seed.
+        skip_missing_target: Skip whole patient pairs whose result is ``-1``.
 
     Each iteration returns ``(image, age, sex, result)``. ``image`` is an RGB
     ``torch.uint8`` tensor in CHW layout unless ``transform`` changes it. The
@@ -54,6 +55,7 @@ class FundusWebDataset(IterableDataset):
         shuffle: bool = False,
         shuffle_buffer: int = 1_000,
         seed: int = 2026,
+        skip_missing_target: bool = False,
     ) -> None:
         super().__init__()
         self.webdataset_dir = Path(webdataset_dir).resolve(strict=True)
@@ -63,6 +65,7 @@ class FundusWebDataset(IterableDataset):
         self.shuffle = shuffle
         self.shuffle_buffer = shuffle_buffer
         self.seed = seed
+        self.skip_missing_target = skip_missing_target
 
         if shuffle_buffer <= 0:
             raise ValueError("shuffle_buffer must be positive")
@@ -123,6 +126,8 @@ class FundusWebDataset(IterableDataset):
             age = self._parse_age(metadata)
             sex = self._parse_sex(metadata)
             target = self._parse_result(labels)
+            if self.skip_missing_target and target < 0:
+                continue
             for image in (left, right):
                 if self.transform is not None:
                     image = self.transform(image)
