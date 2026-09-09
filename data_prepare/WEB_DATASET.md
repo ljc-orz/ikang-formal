@@ -48,6 +48,8 @@ conda run -n AnaCP python data_prepare/build_webdataset.py \
 
 两个上限任一达到就切新分片。对于 5 万行真实数据，建议保留默认的每片 2,000 位患者、约 2 GiB 上限；训练时可以在多个 tar 间 shuffle。验证集同样可以有多片，但始终与训练集物理隔离。
 
+生成 DALI 索引时，脚本仅为 `wds2idx` 子进程设置 `LANG=C` 和 `LC_ALL=C`。这是因为该工具会解析系统 `tar` 命令的文本输出，并依赖英文关键字和日期格式；主程序及系统的中文 locale 不受影响。如果索引生成失败，脚本会同时打印 `wds2idx` 的实际错误输出。
+
 ## NVIDIA DALI 读取
 
 ```python

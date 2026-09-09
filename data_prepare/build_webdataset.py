@@ -255,15 +255,28 @@ def create_dali_indexes(output: Path) -> None:
             "wds2idx was not found on PATH; run this script inside the NVIDIA DALI "
             "environment, or pass --no-dali-index"
         )
+    # wds2idx parses the human-readable output of the system `tar` command and
+    # expects its keywords/date fields in English.  Keep the caller's locale for
+    # the rest of the build, but make this fragile subprocess deterministic.
+    index_env = os.environ.copy()
+    index_env.update({"LANG": "C", "LC_ALL": "C"})
     for tar_path in sorted(output.glob("*/*.tar")):
         index_path = tar_path.with_suffix(".idx")
-        subprocess.run(
-            [executable, str(tar_path), str(index_path)],
-            check=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-        )
+        try:
+            subprocess.run(
+                [executable, str(tar_path), str(index_path)],
+                check=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                env=index_env,
+            )
+        except subprocess.CalledProcessError as exc:
+            detail = (exc.stdout or "").strip() or "wds2idx produced no output"
+            raise RuntimeError(
+                f"wds2idx failed for {tar_path} with exit code {exc.returncode}:\n"
+                f"{detail}"
+            ) from exc
 
 
 def shard_records(output: Path, with_indexes: bool) -> list[dict[str, Any]]:
