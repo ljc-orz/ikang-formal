@@ -101,11 +101,17 @@ def main() -> int:
     else:
         raise ValueError(f"unknown data backend: {data_backend!r}")
     model = FundusClassifier(
+        backbone_type=config["model"].get("backbone", "convnext"),
         model_name=config["model"]["name"],
         pretrained=False,
+        image_size=int(data["image_size"]),
         metadata_hidden_dim=config["model"]["metadata_hidden_dim"],
         classifier_dropout=config["model"]["classifier_dropout"],
         drop_path_rate=config["model"]["drop_path_rate"],
+        lora_last_n_blocks=config["model"].get("lora_last_n_blocks", 2),
+        lora_rank=config["model"].get("lora_rank", 8),
+        lora_alpha=config["model"].get("lora_alpha", 16.0),
+        lora_dropout=config["model"].get("lora_dropout", 0.0),
     )
     model.load_state_dict(checkpoint["model_state"])
     model.to(device)
@@ -144,7 +150,6 @@ def main() -> int:
             predictions["left_probability"],
             predictions["right_probability"],
             predictions["probability"],
-            strict=True,
         ):
             writer.writerow(
                 [

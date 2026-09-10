@@ -10,7 +10,7 @@ from torch.utils.data import DataLoader, Dataset
 
 from src.config import load_config
 from src.data.dali_webdataset import DaliFundusLoader, read_dali_dataset_spec
-from src.model import FundusClassifier
+from src.model import FundusClassifier, LoRALinear, available_backbones
 from src.training import evaluate_paired_eyes
 from src.training.metrics import binary_metrics
 from train import resolve_amp_dtype
@@ -35,6 +35,19 @@ class _FirstPixelModel(nn.Module):
 class V1Tests(unittest.TestCase):
     def test_default_data_backend_does_not_require_dali(self) -> None:
         self.assertEqual(load_config()["data"]["backend"], "torchvision")
+
+    def test_default_backbone_remains_convnext(self) -> None:
+        self.assertEqual(load_config()["model"]["backbone"], "convnext")
+        self.assertEqual(available_backbones(), ("convnext", "retfound_dinov2"))
+
+    def test_lora_starts_as_an_exact_no_op(self) -> None:
+        torch.manual_seed(11)
+        base = nn.Linear(5, 3)
+        value = torch.randn(2, 5)
+        expected = base(value)
+        layer = LoRALinear(base, rank=2, alpha=4.0, dropout=0.0)
+        torch.testing.assert_close(layer(value), expected)
+        self.assertFalse(layer.base.weight.requires_grad)
 
     def test_dali_manifest_can_be_validated_without_importing_dali(self) -> None:
         spec = read_dali_dataset_spec("example/webdataset", "train")

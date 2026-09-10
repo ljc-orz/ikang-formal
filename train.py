@@ -26,7 +26,7 @@ from src.data import (
     build_train_transform,
     count_target_values,
 )
-from src.model import FundusClassifier
+from src.model import FundusClassifier, available_backbones
 from src.training import evaluate_paired_eyes, train_one_epoch
 from src.training.optim import build_optimizer, build_scheduler
 from src.utils import json_safe
@@ -46,6 +46,11 @@ def parse_args() -> argparse.Namespace:
         "--data-backend",
         choices=("torchvision", "dali"),
         help="Image decode/augmentation backend (default: config, torchvision)",
+    )
+    parser.add_argument(
+        "--backbone",
+        choices=available_backbones(),
+        help="Image backbone type (default: config, convnext)",
     )
     parser.add_argument("--model", help="Override the timm model name")
     parser.add_argument(
@@ -262,12 +267,19 @@ def train_target(
         raise ValueError(f"unknown data backend: {data_backend!r}")
 
     model = FundusClassifier(
+        backbone_type=config["model"]["backbone"],
         model_name=config["model"]["name"],
         pretrained=config["model"]["pretrained"],
         pretrained_weights=config["model"]["pretrained_weights"],
+        retfound_pretrained_weights=config["model"]["retfound_pretrained_weights"],
+        image_size=int(data["image_size"]),
         metadata_hidden_dim=config["model"]["metadata_hidden_dim"],
         classifier_dropout=config["model"]["classifier_dropout"],
         drop_path_rate=config["model"]["drop_path_rate"],
+        lora_last_n_blocks=config["model"]["lora_last_n_blocks"],
+        lora_rank=config["model"]["lora_rank"],
+        lora_alpha=config["model"]["lora_alpha"],
+        lora_dropout=config["model"]["lora_dropout"],
     ).to(device)
     criterion, pos_weight = make_criterion(config, counts, device)
     optimizer = build_optimizer(
@@ -472,10 +484,17 @@ def main() -> int:
         config["data"]["num_workers"] = args.num_workers
     if args.data_backend is not None:
         config["data"]["backend"] = args.data_backend
+    if args.backbone is not None:
+        config["model"]["backbone"] = args.backbone
     if args.model is not None:
         config["model"]["name"] = args.model
     if args.pretrained_weights is not None:
-        config["model"]["pretrained_weights"] = str(args.pretrained_weights)
+        weight_key = (
+            "retfound_pretrained_weights"
+            if config["model"]["backbone"] == "retfound_dinov2"
+            else "pretrained_weights"
+        )
+        config["model"][weight_key] = str(args.pretrained_weights)
     if args.no_pretrained:
         config["model"]["pretrained"] = False
     if int(config["training"]["max_epochs"]) <= 0:

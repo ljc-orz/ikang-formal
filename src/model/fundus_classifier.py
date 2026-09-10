@@ -1,29 +1,21 @@
-"""ConvNeXt image and demographic metadata binary classifier."""
+"""Image-backbone and demographic metadata binary classifier."""
 
 from __future__ import annotations
 
 from pathlib import Path
 
-import timm
 import torch
 from torch import nn
 
+from .backbones import BackboneConfig, build_backbone, resolve_pretrained_weights
 
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_PRETRAINED_WEIGHTS = Path(
     "pretrained-weights/convnext_tiny.fb_in22k_ft_in1k/pytorch_model.bin"
 )
-
-
-def resolve_pretrained_weights(path: str | Path) -> Path:
-    """Resolve a local pretrained checkpoint independently of the working directory."""
-    candidate = Path(path).expanduser()
-    if not candidate.is_absolute():
-        candidate = PROJECT_ROOT / candidate
-    candidate = candidate.resolve()
-    if not candidate.is_file():
-        raise FileNotFoundError(f"pretrained weights do not exist: {candidate}")
-    return candidate
+DEFAULT_RETFOUND_WEIGHTS = Path(
+    "pretrained-weights/RETFound_dinov2_shanghai/"
+    "RETFound_dinov2_shanghai_backbone.pth"
+)
 
 
 class FundusClassifier(nn.Module):
@@ -31,36 +23,44 @@ class FundusClassifier(nn.Module):
 
     def __init__(
         self,
+        backbone_type: str = "convnext",
         model_name: str = "convnext_tiny.fb_in22k_ft_in1k",
         pretrained: bool = True,
         pretrained_weights: str | Path | None = DEFAULT_PRETRAINED_WEIGHTS,
+        retfound_pretrained_weights: str | Path | None = DEFAULT_RETFOUND_WEIGHTS,
+        image_size: int = 224,
         metadata_hidden_dim: int = 16,
         classifier_dropout: float = 0.2,
         drop_path_rate: float = 0.1,
+        lora_last_n_blocks: int = 2,
+        lora_rank: int = 8,
+        lora_alpha: float = 16.0,
+        lora_dropout: float = 0.0,
     ) -> None:
         super().__init__()
-        pretrained_cfg_overlay = None
-        if pretrained:
-            if pretrained_weights is None:
-                raise ValueError(
-                    "pretrained=True requires a local pretrained_weights path"
-                )
-            weights_path = resolve_pretrained_weights(pretrained_weights)
-            pretrained_cfg_overlay = {"file": str(weights_path)}
-        self.backbone = timm.create_model(
-            model_name,
-            pretrained=pretrained,
-            pretrained_cfg_overlay=pretrained_cfg_overlay,
-            num_classes=0,
-            global_pool="avg",
-            drop_path_rate=drop_path_rate,
+        selected_weights = (
+            retfound_pretrained_weights
+            if backbone_type == "retfound_dinov2"
+            else pretrained_weights
         )
-        if not hasattr(self.backbone, "stages") or len(self.backbone.stages) < 2:
-            raise ValueError(
-                f"V1 requires a ConvNeXt-like backbone with at least two stages: {model_name}"
+        built = build_backbone(
+            BackboneConfig(
+                kind=backbone_type,
+                model_name=model_name,
+                pretrained=pretrained,
+                pretrained_weights=selected_weights,
+                image_size=image_size,
+                drop_path_rate=drop_path_rate,
+                lora_last_n_blocks=lora_last_n_blocks,
+                lora_rank=lora_rank,
+                lora_alpha=lora_alpha,
+                lora_dropout=lora_dropout,
             )
+        )
+        self.backbone = built.module
+        self.backbone_type = backbone_type
 
-        image_dim = int(self.backbone.num_features)
+        image_dim = built.feature_dim
         self.meta_encoder = nn.Sequential(
             nn.Linear(2, metadata_hidden_dim),
             nn.GELU(),
@@ -71,18 +71,6 @@ class FundusClassifier(nn.Module):
             nn.Dropout(classifier_dropout),
             nn.Linear(image_dim + metadata_hidden_dim, 1),
         )
-        self.freeze_for_v1()
-
-    def freeze_for_v1(self) -> None:
-        """Train only the final two backbone stages, pooling head and new heads."""
-        for parameter in self.backbone.parameters():
-            parameter.requires_grad = False
-        for stage in self.backbone.stages[-2:]:
-            for parameter in stage.parameters():
-                parameter.requires_grad = True
-        if hasattr(self.backbone, "head"):
-            for parameter in self.backbone.head.parameters():
-                parameter.requires_grad = True
         for module in (self.meta_encoder, self.classifier):
             for parameter in module.parameters():
                 parameter.requires_grad = True

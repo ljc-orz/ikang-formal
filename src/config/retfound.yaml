@@ -14,7 +14,7 @@ data:
   dali_dont_use_mmap: false
 
 model:
-  backbone: convnext
+  backbone: retfound_dinov2
   name: convnext_tiny.fb_in22k_ft_in1k
   pretrained: true
   pretrained_weights: pretrained-weights/convnext_tiny.fb_in22k_ft_in1k/pytorch_model.bin
@@ -22,7 +22,7 @@ model:
   drop_path_rate: 0.1
   metadata_hidden_dim: 16
   classifier_dropout: 0.2
-  lora_last_n_blocks: 2
+  lora_last_n_blocks: 8
   lora_rank: 8
   lora_alpha: 16.0
   lora_dropout: 0.0
