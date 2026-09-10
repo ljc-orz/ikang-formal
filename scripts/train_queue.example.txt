@@ -1,0 +1,5 @@
+# One job per line. Write only the arguments accepted by train.py; the
+# scheduler appends --device cuda:N automatically.
+--data-dir /path/to/webdataset --targets result_alt --output-dir runs/alt --data-backend dali
+--data-dir /path/to/webdataset --targets result_hba1c --output-dir runs/hba1c --data-backend dali
+--data-dir /path/to/webdataset --targets result_tg --output-dir runs/tg --data-backend dali

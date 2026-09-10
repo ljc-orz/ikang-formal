@@ -103,12 +103,18 @@ def _create_pipeline(
     pixel_std = [255.0 * float(value) for value in std]
 
     def decode_and_augment(encoded: Any, seed_offset: int):
+        # Keep this sequence and its parameter ranges aligned with
+        # build_train_transform in transforms.py. The two libraries use
+        # different random-number generators, so individual images will not be
+        # pixel-identical, but they receive the same transforms and sampling
+        # distributions.
         image = fn.decoders.image_random_crop(
             encoded,
             device="mixed",
             output_type=types.RGB,
             random_area=[0.90, 1.00],
             random_aspect_ratio=[0.95, 1.05],
+            jpeg_fancy_upsampling=True,
             seed=seed + seed_offset,
         )
         image = fn.resize(
@@ -117,36 +123,58 @@ def _create_pipeline(
             resize_x=image_size,
             resize_y=image_size,
             interp_type=types.INTERP_LINEAR,
+            antialias=True,
         )
 
+        mirror = fn.random.coin_flip(
+            probability=0.5, seed=seed + seed_offset + 1
+        )
+        image = fn.flip(image, device="gpu", horizontal=mirror)
+
         affine_enabled = fn.cast(
-            fn.random.coin_flip(probability=0.7, seed=seed + seed_offset + 1),
+            fn.random.coin_flip(probability=0.7, seed=seed + seed_offset + 2),
             dtype=types.FLOAT,
         )
         angle = affine_enabled * fn.random.uniform(
-            range=[-10.0, 10.0], seed=seed + seed_offset + 2
+            range=[-10.0, 10.0], seed=seed + seed_offset + 3
         )
-        image = fn.rotate(
+        # torchvision rounds translations to integer pixels. Asking DALI's
+        # uniform generator for INT32 values applies the same rounding.
+        translation = affine_enabled * fn.random.uniform(
+            range=[-0.03 * image_size, 0.03 * image_size],
+            shape=[2],
+            dtype=types.INT32,
+            seed=seed + seed_offset + 4,
+        )
+        scale = 1.0 + affine_enabled * fn.random.uniform(
+            range=[-0.05, 0.05], seed=seed + seed_offset + 5
+        )
+        center = [(image_size - 1) / 2.0, (image_size - 1) / 2.0]
+        affine = fn.transforms.scale(scale=fn.stack(scale, scale), center=center)
+        affine = fn.transforms.rotation(affine, angle=angle, center=center)
+        affine = fn.transforms.translation(affine, offset=translation)
+        image = fn.warp_affine(
             image,
+            affine,
             device="gpu",
-            angle=angle,
-            keep_size=True,
+            size=[image_size, image_size],
+            inverse_map=False,
             interp_type=types.INTERP_LINEAR,
             fill_value=0,
         )
 
         color_enabled = fn.cast(
-            fn.random.coin_flip(probability=0.5, seed=seed + seed_offset + 3),
+            fn.random.coin_flip(probability=0.5, seed=seed + seed_offset + 6),
             dtype=types.FLOAT,
         )
         brightness = 1.0 + color_enabled * fn.random.uniform(
-            range=[-0.10, 0.10], seed=seed + seed_offset + 4
+            range=[-0.10, 0.10], seed=seed + seed_offset + 7
         )
         contrast = 1.0 + color_enabled * fn.random.uniform(
-            range=[-0.10, 0.10], seed=seed + seed_offset + 5
+            range=[-0.10, 0.10], seed=seed + seed_offset + 8
         )
         saturation = 1.0 + color_enabled * fn.random.uniform(
-            range=[-0.05, 0.05], seed=seed + seed_offset + 6
+            range=[-0.05, 0.05], seed=seed + seed_offset + 9
         )
         image = fn.color_twist(
             image,
@@ -158,17 +186,16 @@ def _create_pipeline(
         )
 
         blur_enabled = fn.cast(
-            fn.random.coin_flip(probability=0.1, seed=seed + seed_offset + 7),
+            fn.random.coin_flip(probability=0.1, seed=seed + seed_offset + 10),
             dtype=types.FLOAT,
         )
         # sigma=1e-4 is effectively an identity 3x3 kernel when blur is disabled.
         sigma = 0.0001 + blur_enabled * fn.random.uniform(
-            range=[0.0999, 0.7999], seed=seed + seed_offset + 8
+            range=[0.0999, 0.7999], seed=seed + seed_offset + 11
         )
         image = fn.gaussian_blur(
             image, device="gpu", window_size=3, sigma=sigma
         )
-        mirror = fn.random.coin_flip(probability=0.5, seed=seed + seed_offset + 9)
         return fn.crop_mirror_normalize(
             image,
             device="gpu",
@@ -176,17 +203,22 @@ def _create_pipeline(
             output_layout="CHW",
             mean=pixel_mean,
             std=pixel_std,
-            mirror=mirror,
         )
 
     def decode_for_evaluation(encoded: Any):
-        image = fn.decoders.image(encoded, device="mixed", output_type=types.RGB)
+        image = fn.decoders.image(
+            encoded,
+            device="mixed",
+            output_type=types.RGB,
+            jpeg_fancy_upsampling=True,
+        )
         image = fn.resize(
             image,
             device="gpu",
             resize_x=image_size,
             resize_y=image_size,
             interp_type=types.INTERP_LINEAR,
+            antialias=True,
         )
         return fn.crop_mirror_normalize(
             image,
@@ -338,10 +370,10 @@ class DaliFundusLoader:
 
             if self.mode == "eyes":
                 yield (
-                    torch.cat((left, right), dim=0),
-                    torch.cat((ages, ages), dim=0),
-                    torch.cat((sexes, sexes), dim=0),
-                    torch.cat((target, target), dim=0),
+                    torch.stack((left, right), dim=1).flatten(0, 1),
+                    ages.repeat_interleave(2),
+                    sexes.repeat_interleave(2),
+                    target.repeat_interleave(2),
                 )
             else:
                 patient_ids = [
