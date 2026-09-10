@@ -42,6 +42,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--epochs", type=int)
     parser.add_argument("--batch-size", type=int)
     parser.add_argument("--num-workers", type=int)
+    parser.add_argument(
+        "--data-backend",
+        choices=("torchvision", "dali"),
+        help="Image decode/augmentation backend (default: config, torchvision)",
+    )
     parser.add_argument("--model", help="Override the timm model name")
     parser.add_argument(
         "--pretrained-weights",
@@ -192,27 +197,69 @@ def train_target(
     validation_counts = count_target_values(
         args.data_dir, data["validation_split"], target
     )
-    train_transform = build_train_transform(data["image_size"], data["mean"], data["std"])
-    eval_transform = build_eval_transform(data["image_size"], data["mean"], data["std"])
-    train_dataset = FundusWebDataset(
-        args.data_dir,
-        data["train_split"],
-        target,
-        transform=train_transform,
-        shuffle=True,
-        shuffle_buffer=data["shuffle_buffer"],
-        seed=config["seed"],
-        skip_missing_target=True,
-    )
-    validation_dataset = PairedFundusWebDataset(
-        args.data_dir,
-        data["validation_split"],
-        target,
-        transform=eval_transform,
-        skip_missing_target=True,
-    )
-    train_loader = make_loader(train_dataset, config)
-    validation_loader = make_loader(validation_dataset, config)
+    data_backend = str(data.get("backend", "torchvision"))
+    if data_backend == "torchvision":
+        train_transform = build_train_transform(
+            data["image_size"], data["mean"], data["std"]
+        )
+        eval_transform = build_eval_transform(
+            data["image_size"], data["mean"], data["std"]
+        )
+        train_dataset = FundusWebDataset(
+            args.data_dir,
+            data["train_split"],
+            target,
+            transform=train_transform,
+            shuffle=True,
+            shuffle_buffer=data["shuffle_buffer"],
+            seed=config["seed"],
+            skip_missing_target=True,
+        )
+        validation_dataset = PairedFundusWebDataset(
+            args.data_dir,
+            data["validation_split"],
+            target,
+            transform=eval_transform,
+            skip_missing_target=True,
+        )
+        train_loader = make_loader(train_dataset, config)
+        validation_loader = make_loader(validation_dataset, config)
+    elif data_backend == "dali":
+        if device.type != "cuda":
+            raise RuntimeError("the DALI data backend requires a CUDA device")
+        from src.data.dali_webdataset import DaliFundusLoader
+
+        device_id = device.index if device.index is not None else torch.cuda.current_device()
+        dali_common = {
+            "num_threads": int(data["dali_num_threads"]),
+            "device_id": device_id,
+            "image_size": int(data["image_size"]),
+            "mean": data["mean"],
+            "std": data["std"],
+            "seed": int(config["seed"]),
+            "dont_use_mmap": bool(data["dali_dont_use_mmap"]),
+            "prefetch_queue_depth": int(data["dali_prefetch_queue_depth"]),
+        }
+        train_loader = DaliFundusLoader(
+            args.data_dir,
+            data["train_split"],
+            target,
+            mode="eyes",
+            batch_size=int(training["batch_size"]),
+            skip_missing_target=True,
+            **dali_common,
+        )
+        validation_loader = DaliFundusLoader(
+            args.data_dir,
+            data["validation_split"],
+            target,
+            mode="pairs",
+            batch_size=int(training["batch_size"]),
+            skip_missing_target=True,
+            **dali_common,
+        )
+    else:
+        raise ValueError(f"unknown data backend: {data_backend!r}")
 
     model = FundusClassifier(
         model_name=config["model"]["name"],
@@ -239,10 +286,14 @@ def train_target(
     scaler = torch.amp.GradScaler("cuda", enabled=amp_dtype == torch.float16)
     trainable, total = model.trainable_parameter_counts()
     batch_size = int(training["batch_size"])
-    train_batches = math.ceil(2 * (counts[0] + counts[1]) / batch_size)
-    validation_batches = math.ceil(
-        (validation_counts[0] + validation_counts[1]) / batch_size
-    )
+    if data_backend == "dali":
+        train_batches = len(train_loader)
+        validation_batches = len(validation_loader)
+    else:
+        train_batches = math.ceil(2 * (counts[0] + counts[1]) / batch_size)
+        validation_batches = math.ceil(
+            (validation_counts[0] + validation_counts[1]) / batch_size
+        )
     checkpoint_config = json.loads(json.dumps(config))
     (target_dir / "run_config.json").write_text(
         json.dumps(checkpoint_config, ensure_ascii=False, indent=2) + "\n",
@@ -250,7 +301,7 @@ def train_target(
     )
     log_message(
         log_path,
-        f"[{target}] start device={device} amp={amp_dtype} "
+        f"[{target}] start device={device} amp={amp_dtype} backend={data_backend} "
         f"train_counts={counts} validation_counts={validation_counts} "
         f"pos_weight={pos_weight:.6g} trainable={trainable:,}/{total:,} "
         f"batch_size={batch_size} accumulation_steps="
@@ -419,6 +470,8 @@ def main() -> int:
         config["training"]["batch_size"] = args.batch_size
     if args.num_workers is not None:
         config["data"]["num_workers"] = args.num_workers
+    if args.data_backend is not None:
+        config["data"]["backend"] = args.data_backend
     if args.model is not None:
         config["model"]["name"] = args.model
     if args.pretrained_weights is not None:

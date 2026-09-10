@@ -34,6 +34,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--output", type=Path, help="Prediction CSV path")
     parser.add_argument("--batch-size", type=int)
     parser.add_argument("--num-workers", type=int)
+    parser.add_argument(
+        "--data-backend",
+        choices=("torchvision", "dali"),
+        help="Override the checkpoint image data backend",
+    )
     parser.add_argument("--device", default="auto")
     parser.add_argument("--threshold", type=float, help="Default: checkpoint threshold")
     parser.add_argument("--max-batches", type=int, help="Debug/smoke-test limit")
@@ -50,22 +55,51 @@ def main() -> int:
     device = resolve_device(args.device)
     amp_dtype = resolve_amp_dtype(config["training"]["amp"], device)
     data = config["data"]
-    transform = build_eval_transform(data["image_size"], data["mean"], data["std"])
-    dataset = PairedFundusWebDataset(
-        args.data_dir,
-        args.split,
-        target,
-        transform=transform,
-        skip_missing_target=False,
+    data_backend = args.data_backend or data.get("backend", "torchvision")
+    batch_size = (
+        config["training"]["batch_size"] if args.batch_size is None else args.batch_size
     )
-    workers = data["num_workers"] if args.num_workers is None else args.num_workers
-    loader = DataLoader(
-        dataset,
-        batch_size=config["training"]["batch_size"] if args.batch_size is None else args.batch_size,
-        num_workers=workers,
-        pin_memory=device.type == "cuda",
-        persistent_workers=workers > 0,
-    )
+    if data_backend == "torchvision":
+        transform = build_eval_transform(data["image_size"], data["mean"], data["std"])
+        dataset = PairedFundusWebDataset(
+            args.data_dir,
+            args.split,
+            target,
+            transform=transform,
+            skip_missing_target=False,
+        )
+        workers = data["num_workers"] if args.num_workers is None else args.num_workers
+        loader = DataLoader(
+            dataset,
+            batch_size=batch_size,
+            num_workers=workers,
+            pin_memory=device.type == "cuda",
+            persistent_workers=workers > 0,
+        )
+    elif data_backend == "dali":
+        if device.type != "cuda":
+            raise RuntimeError("the DALI data backend requires a CUDA device")
+        from src.data.dali_webdataset import DaliFundusLoader
+
+        device_id = device.index if device.index is not None else torch.cuda.current_device()
+        loader = DaliFundusLoader(
+            args.data_dir,
+            args.split,
+            target,
+            mode="pairs",
+            batch_size=int(batch_size),
+            num_threads=int(data.get("dali_num_threads", 4)),
+            device_id=device_id,
+            image_size=int(data["image_size"]),
+            mean=data["mean"],
+            std=data["std"],
+            seed=int(config["seed"]),
+            skip_missing_target=False,
+            dont_use_mmap=bool(data.get("dali_dont_use_mmap", False)),
+            prefetch_queue_depth=int(data.get("dali_prefetch_queue_depth", 2)),
+        )
+    else:
+        raise ValueError(f"unknown data backend: {data_backend!r}")
     model = FundusClassifier(
         model_name=config["model"]["name"],
         pretrained=False,
@@ -126,6 +160,7 @@ def main() -> int:
         {
             "target": target,
             "split": args.split,
+            "data_backend": data_backend,
             "patients": len(predictions["target"]),
             "labeled_patients": int(np.sum(predictions["target"] >= 0)),
             "predictions": str(output.resolve()),

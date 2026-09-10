@@ -9,6 +9,7 @@ from torch import nn
 from torch.utils.data import DataLoader, Dataset
 
 from src.config import load_config
+from src.data.dali_webdataset import DaliFundusLoader, read_dali_dataset_spec
 from src.model import FundusClassifier
 from src.training import evaluate_paired_eyes
 from src.training.metrics import binary_metrics
@@ -32,6 +33,32 @@ class _FirstPixelModel(nn.Module):
 
 
 class V1Tests(unittest.TestCase):
+    def test_default_data_backend_does_not_require_dali(self) -> None:
+        self.assertEqual(load_config()["data"]["backend"], "torchvision")
+
+    def test_dali_manifest_can_be_validated_without_importing_dali(self) -> None:
+        spec = read_dali_dataset_spec("example/webdataset", "train")
+        self.assertEqual(spec.sample_count, 493)
+        self.assertEqual(len(spec.tar_paths), len(spec.index_paths))
+        self.assertTrue(all(Path(path).is_file() for path in spec.index_paths))
+
+    def test_dali_training_requires_even_image_batch_size(self) -> None:
+        with self.assertRaisesRegex(ValueError, "even --batch-size"):
+            DaliFundusLoader(
+                "unused",
+                "train",
+                "result_alt",
+                mode="eyes",
+                batch_size=3,
+                num_threads=1,
+                device_id=0,
+                image_size=224,
+                mean=[0.485, 0.456, 0.406],
+                std=[0.229, 0.224, 0.225],
+                seed=2026,
+                skip_missing_target=True,
+            )
+
     def test_auto_amp_defaults_to_float16(self) -> None:
         self.assertIs(
             resolve_amp_dtype("auto", torch.device("cuda")), torch.float16
