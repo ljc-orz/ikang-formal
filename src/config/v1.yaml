@@ -2,6 +2,7 @@ seed: 2026
 
 data:
   backend: torchvision
+  train_sampling: natural
   train_split: train
   validation_split: internal_validation
   image_size: 224

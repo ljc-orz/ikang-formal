@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import numpy as np
 import torch
 import unittest
@@ -9,11 +10,12 @@ from torch import nn
 from torch.utils.data import DataLoader, Dataset
 
 from src.config import load_config
+from src.data import BalancedBinaryLoader
 from src.data.dali_webdataset import DaliFundusLoader, read_dali_dataset_spec
 from src.model import FundusClassifier, LoRALinear, available_backbones
 from src.training import evaluate_paired_eyes
 from src.training.metrics import binary_metrics
-from train import resolve_amp_dtype
+from train import make_criterion, resolve_amp_dtype
 
 
 class _Pairs(Dataset):
@@ -32,9 +34,40 @@ class _FirstPixelModel(nn.Module):
         return image[:, 0, 0, 0]
 
 
+def _training_batch(labels: list[int]):
+    values = torch.tensor(labels)
+    images = torch.arange(len(labels)).view(-1, 1, 1, 1).float()
+    return images, values + 40, values, values
+
+
 class V1Tests(unittest.TestCase):
     def test_default_data_backend_does_not_require_dali(self) -> None:
         self.assertEqual(load_config()["data"]["backend"], "torchvision")
+        self.assertEqual(load_config()["data"]["train_sampling"], "natural")
+
+    def test_balanced_loader_keeps_the_natural_epoch_length(self) -> None:
+        source = [
+            _training_batch([0, 0, 0, 0]),
+            _training_batch([1, 1, 0, 0]),
+            _training_batch([0, 0, 1, 1]),
+        ]
+        loader = BalancedBinaryLoader(
+            source,
+            batch_size=4,
+            class_counts={-1: 0, 0: 4, 1: 2},
+            seed=2026,
+        )
+        labels = torch.cat([batch[-1] for batch in loader])
+        self.assertEqual(labels.tolist().count(0), 6)
+        self.assertEqual(labels.tolist().count(1), 6)
+        self.assertEqual(labels.numel(), 12)
+        self.assertEqual(len(loader), 3)
+
+    def test_balanced_sampling_disables_automatic_positive_weight(self) -> None:
+        config = load_config()
+        config["data"]["train_sampling"] = "balanced"
+        _, weight = make_criterion(config, {-1: 0, 0: 4, 1: 2}, torch.device("cpu"))
+        self.assertEqual(weight, 1.0)
 
     def test_default_backbone_remains_convnext(self) -> None:
         self.assertEqual(load_config()["model"]["backbone"], "convnext")
@@ -51,7 +84,10 @@ class V1Tests(unittest.TestCase):
 
     def test_dali_manifest_can_be_validated_without_importing_dali(self) -> None:
         spec = read_dali_dataset_spec("example/webdataset", "train")
-        self.assertEqual(spec.sample_count, 493)
+        manifest = json.loads(
+            (Path("example/webdataset") / "dataset.json").read_text(encoding="utf-8")
+        )
+        self.assertEqual(spec.sample_count, manifest["splits"]["train"])
         self.assertEqual(len(spec.tar_paths), len(spec.index_paths))
         self.assertTrue(all(Path(path).is_file() for path in spec.index_paths))
 
