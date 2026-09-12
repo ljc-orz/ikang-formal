@@ -1,0 +1,15 @@
+# 使用dali后端，并且与torchvision行为对齐
+# batchsize=256
+# 使用retfound-dinov2，lora微调最后8个block
+--data-dir /DaTa/ljc_data/webdataset_result_merged_wide_split_50000 --targets result_alt --output-dir /DaTa/ljc_data/runs_dali_schel_resnet50_balanced --data-backend dali --config src/config/resnet50.yaml
+--data-dir /DaTa/ljc_data/webdataset_result_merged_wide_split_50000 --targets result_bmi --output-dir /DaTa/ljc_data/runs_dali_schel_resnet50_balanced --data-backend dali --config src/config/resnet50.yaml
+--data-dir /DaTa/ljc_data/webdataset_result_merged_wide_split_50000 --targets result_fbg --output-dir /DaTa/ljc_data/runs_dali_schel_resnet50_balanced --data-backend dali --config src/config/resnet50.yaml
+--data-dir /DaTa/ljc_data/webdataset_result_merged_wide_split_50000 --targets result_hb --output-dir /DaTa/ljc_data/runs_dali_schel_resnet50_balanced --data-backend dali --config src/config/resnet50.yaml
+--data-dir /DaTa/ljc_data/webdataset_result_merged_wide_split_50000 --targets result_hba1c --output-dir /DaTa/ljc_data/runs_dali_schel_resnet50_balanced --data-backend dali --config src/config/resnet50.yaml
+--data-dir /DaTa/ljc_data/webdataset_result_merged_wide_split_50000 --targets result_hct --output-dir /DaTa/ljc_data/runs_dali_schel_resnet50_balanced --data-backend dali --config src/config/resnet50.yaml
+--data-dir /DaTa/ljc_data/webdataset_result_merged_wide_split_50000 --targets result_hdl_c --output-dir /DaTa/ljc_data/runs_dali_schel_resnet50_balanced --data-backend dali --config src/config/resnet50.yaml
+--data-dir /DaTa/ljc_data/webdataset_result_merged_wide_split_50000 --targets result_rbc --output-dir /DaTa/ljc_data/runs_dali_schel_resnet50_balanced --data-backend dali --config src/config/resnet50.yaml
+--data-dir /DaTa/ljc_data/webdataset_result_merged_wide_split_50000 --targets result_scr --output-dir /DaTa/ljc_data/runs_dali_schel_resnet50_balanced --data-backend dali --config src/config/resnet50.yaml
+--data-dir /DaTa/ljc_data/webdataset_result_merged_wide_split_50000 --targets result_tg --output-dir /DaTa/ljc_data/runs_dali_schel_resnet50_balanced --data-backend dali --config src/config/resnet50.yaml
+--data-dir /DaTa/ljc_data/webdataset_result_merged_wide_split_50000 --targets result_wbc --output-dir /DaTa/ljc_data/runs_dali_schel_resnet50_balanced --data-backend dali --config src/config/resnet50.yaml
+

@@ -1,6 +1,5 @@
 """Configuration helpers."""
 
-from .loader import load_config
+from .loader import apply_config_overrides, load_config
 
-__all__ = ["load_config"]
-
+__all__ = ["apply_config_overrides", "load_config"]

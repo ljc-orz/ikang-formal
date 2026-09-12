@@ -6,6 +6,7 @@ from collections.abc import Callable
 
 from .base import BackboneConfig, BuiltBackbone
 from .convnext import build_convnext
+from .resnet50 import build_resnet50
 from .retfound_dinov2 import build_retfound_dinov2
 
 
@@ -14,6 +15,7 @@ BackboneBuilder = Callable[[BackboneConfig], BuiltBackbone]
 _BUILDERS: dict[str, BackboneBuilder] = {
     "convnext": build_convnext,
     "retfound_dinov2": build_retfound_dinov2,
+    "resnet50": build_resnet50,
 }
 
 

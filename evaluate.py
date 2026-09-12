@@ -108,6 +108,9 @@ def main() -> int:
         metadata_hidden_dim=config["model"]["metadata_hidden_dim"],
         classifier_dropout=config["model"]["classifier_dropout"],
         drop_path_rate=config["model"]["drop_path_rate"],
+        trainable_last_n_blocks=config["model"].get(
+            "trainable_last_n_blocks", 3
+        ),
         lora_last_n_blocks=config["model"].get("lora_last_n_blocks", 2),
         lora_rank=config["model"].get("lora_rank", 8),
         lora_alpha=config["model"].get("lora_alpha", 16.0),

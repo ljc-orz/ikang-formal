@@ -18,7 +18,7 @@ import torch
 from torch import nn
 from torch.utils.data import DataLoader
 
-from src.config import load_config
+from src.config import apply_config_overrides, load_config
 from src.data import (
     BalancedBinaryLoader,
     FundusWebDataset,
@@ -67,6 +67,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--no-pretrained", action="store_true")
     parser.add_argument("--max-train-batches", type=int, help="Debug/smoke-test limit")
     parser.add_argument("--max-val-batches", type=int, help="Debug/smoke-test limit")
+    parser.add_argument(
+        "--set",
+        dest="config_overrides",
+        action="append",
+        default=[],
+        metavar="KEY=VALUE",
+        help="Override any existing config leaf; may be repeated",
+    )
     return parser.parse_args()
 
 
@@ -324,6 +332,7 @@ def train_target(
         metadata_hidden_dim=config["model"]["metadata_hidden_dim"],
         classifier_dropout=config["model"]["classifier_dropout"],
         drop_path_rate=config["model"]["drop_path_rate"],
+        trainable_last_n_blocks=config["model"]["trainable_last_n_blocks"],
         lora_last_n_blocks=config["model"]["lora_last_n_blocks"],
         lora_rank=config["model"]["lora_rank"],
         lora_alpha=config["model"]["lora_alpha"],
@@ -556,7 +565,7 @@ def apply_cli_overrides(config: dict[str, Any], args: argparse.Namespace) -> dic
         config["model"][weight_key] = str(args.pretrained_weights)
     if args.no_pretrained:
         config["model"]["pretrained"] = False
-    return config
+    return apply_config_overrides(config, args.config_overrides)
 
 
 def main() -> int:

@@ -9,7 +9,7 @@ from tempfile import TemporaryDirectory
 from torch import nn
 from torch.utils.data import DataLoader, Dataset
 
-from src.config import load_config
+from src.config import apply_config_overrides, load_config
 from src.data import BalancedBinaryLoader
 from src.data.dali_webdataset import DaliFundusLoader, read_dali_dataset_spec
 from src.model import FundusClassifier, LoRALinear, available_backbones
@@ -71,7 +71,30 @@ class V1Tests(unittest.TestCase):
 
     def test_default_backbone_remains_convnext(self) -> None:
         self.assertEqual(load_config()["model"]["backbone"], "convnext")
-        self.assertEqual(available_backbones(), ("convnext", "retfound_dinov2"))
+        self.assertEqual(
+            available_backbones(), ("convnext", "retfound_dinov2", "resnet50")
+        )
+
+    def test_resnet_only_unfreezes_requested_final_blocks(self) -> None:
+        model = FundusClassifier(
+            backbone_type="resnet50",
+            model_name="resnet50.a1_in1k",
+            pretrained=False,
+            trainable_last_n_blocks=2,
+        )
+        blocks = [
+            block
+            for name in ("layer1", "layer2", "layer3", "layer4")
+            for block in getattr(model.backbone, name)
+        ]
+        self.assertEqual(len(blocks), 16)
+        self.assertFalse(
+            any(parameter.requires_grad for block in blocks[:-2] for parameter in block.parameters())
+        )
+        self.assertTrue(
+            all(parameter.requires_grad for block in blocks[-2:] for parameter in block.parameters())
+        )
+        self.assertFalse(model.backbone.conv1.weight.requires_grad)
 
     def test_lora_starts_as_an_exact_no_op(self) -> None:
         torch.manual_seed(11)
@@ -169,6 +192,27 @@ class V1Tests(unittest.TestCase):
             override.write_text("training:\n  typo: 1\n", encoding="utf-8")
             with self.assertRaisesRegex(ValueError, "training.typo"):
                 load_config(override)
+
+    def test_dotted_config_overrides_parse_yaml_values(self) -> None:
+        config = load_config("src/config/resnet50.yaml")
+        apply_config_overrides(
+            config,
+            [
+                "training.max_epochs=12",
+                "training.backbone_lr=5e-5",
+                "model.pretrained=false",
+                "model.trainable_last_n_blocks=5",
+            ],
+        )
+        self.assertEqual(config["training"]["max_epochs"], 12)
+        self.assertEqual(config["training"]["backbone_lr"], 5e-5)
+        self.assertIsInstance(config["training"]["backbone_lr"], float)
+        self.assertFalse(config["model"]["pretrained"])
+        self.assertEqual(config["model"]["trainable_last_n_blocks"], 5)
+
+    def test_dotted_config_overrides_reject_unknown_keys(self) -> None:
+        with self.assertRaisesRegex(ValueError, "training.typo"):
+            apply_config_overrides(load_config(), ["training.typo=1"])
 
 
 if __name__ == "__main__":

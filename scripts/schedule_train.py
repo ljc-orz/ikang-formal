@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
-"""Run queued train.py argument sets across every visible GPU."""
+"""Run queued train.py argument sets across every visible GPU.
+
+Queue lines may repeat ``--set section.key=value`` to override YAML fields.
+"""
 
 from __future__ import annotations
 
@@ -83,6 +86,16 @@ def load_jobs(path: Path) -> list[Job]:
             raise ValueError(
                 f"{resolved}:{line_number}: --device is assigned by the scheduler"
             )
+        for index, value in enumerate(arguments):
+            if value == "--set":
+                if index + 1 >= len(arguments) or "=" not in arguments[index + 1]:
+                    raise ValueError(
+                        f"{resolved}:{line_number}: --set requires KEY=VALUE"
+                    )
+            elif value.startswith("--set=") and "=" not in value[len("--set=") :]:
+                raise ValueError(
+                    f"{resolved}:{line_number}: --set requires KEY=VALUE"
+                )
         jobs.append(Job(number=line_number, arguments=tuple(arguments)))
     if not jobs:
         raise ValueError(f"queue file contains no jobs: {resolved}")

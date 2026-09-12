@@ -15,10 +15,10 @@ data:
   dali_dont_use_mmap: false
 
 model:
-  backbone: retfound_dinov2
-  name: convnext_tiny.fb_in22k_ft_in1k
+  backbone: resnet50
+  name: resnet50.a1_in1k
   pretrained: true
-  pretrained_weights: pretrained-weights/convnext_tiny.fb_in22k_ft_in1k/pytorch_model.bin
+  pretrained_weights: pretrained-weights/resnet50.a1_in1k/pytorch_model.bin
   retfound_pretrained_weights: pretrained-weights/RETFound_dinov2_shanghai/RETFound_dinov2_shanghai_backbone.pth
   drop_path_rate: 0.1
   metadata_hidden_dim: 16
@@ -31,8 +31,8 @@ model:
 
 training:
   max_epochs: 30
-  batch_size: 128
-  gradient_accumulation_steps: 2
+  batch_size: 256
+  gradient_accumulation_steps: 1
   backbone_lr: 1.0e-4
   head_lr: 3.0e-4
   weight_decay: 0.05

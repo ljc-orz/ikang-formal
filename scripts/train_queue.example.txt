@@ -1,5 +1,6 @@
 # One job per line. Write only the arguments accepted by train.py; the
-# scheduler appends --device cuda:N automatically.
+# scheduler appends --device cuda:N automatically. Repeat --set KEY=VALUE to
+# override an existing YAML field for one job.
 --data-dir /path/to/webdataset --targets result_alt --output-dir runs/alt --data-backend dali
---data-dir /path/to/webdataset --targets result_hba1c --output-dir runs/hba1c --data-backend dali
+--data-dir /path/to/webdataset --targets result_hba1c --output-dir runs/hba1c --data-backend dali --config src/config/resnet50.yaml --set training.max_epochs=20 --set model.trainable_last_n_blocks=5 --set training.backbone_lr=5e-5
 --data-dir /path/to/webdataset --targets result_tg --output-dir runs/tg --data-backend dali

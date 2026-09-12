@@ -23,6 +23,7 @@ model:
   drop_path_rate: 0.1
   metadata_hidden_dim: 16
   classifier_dropout: 0.2
+  trainable_last_n_blocks: 3
   lora_last_n_blocks: 2
   lora_rank: 8
   lora_alpha: 16.0

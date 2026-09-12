@@ -40,3 +40,40 @@ def load_config(path: str | Path | None = None) -> dict[str, Any]:
         _merge(config, _read_yaml(override_path))
     return config
 
+
+def apply_config_overrides(
+    config: dict[str, Any], assignments: list[str] | tuple[str, ...]
+) -> dict[str, Any]:
+    """Apply strict dotted-path assignments whose values use YAML syntax."""
+    for assignment in assignments:
+        key, separator, raw_value = assignment.partition("=")
+        if not separator or not key or any(not part for part in key.split(".")):
+            raise ValueError(
+                f"invalid configuration override {assignment!r}; expected KEY=VALUE"
+            )
+        parts = key.split(".")
+        section: dict[str, Any] = config
+        for index, part in enumerate(parts):
+            path = ".".join(parts[: index + 1])
+            if part not in section:
+                raise ValueError(f"unknown configuration key: {path}")
+            if index == len(parts) - 1:
+                if isinstance(section[part], dict):
+                    raise ValueError(
+                        f"configuration override must target a value, not section {path}"
+                    )
+                parsed = yaml.safe_load(raw_value)
+                if isinstance(section[part], float):
+                    try:
+                        parsed = float(parsed)
+                    except (TypeError, ValueError) as exc:
+                        raise ValueError(
+                            f"configuration override {path} must be a number"
+                        ) from exc
+                section[part] = parsed
+                break
+            value = section[part]
+            if not isinstance(value, dict):
+                raise ValueError(f"configuration value {path} has no child keys")
+            section = value
+    return config

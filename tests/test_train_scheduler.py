@@ -30,6 +30,27 @@ class TrainSchedulerTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "assigned by the scheduler"):
                 load_jobs(queue)
 
+    def test_load_jobs_accepts_config_field_overrides(self) -> None:
+        with TemporaryDirectory() as directory:
+            queue = Path(directory) / "jobs.txt"
+            queue.write_text(
+                "--config src/config/resnet50.yaml "
+                "--set training.max_epochs=12 "
+                "--set model.trainable_last_n_blocks=5\n",
+                encoding="utf-8",
+            )
+            job = load_jobs(queue)[0]
+
+        self.assertIn("training.max_epochs=12", job.arguments)
+        self.assertIn("model.trainable_last_n_blocks=5", job.arguments)
+
+    def test_load_jobs_rejects_malformed_config_override(self) -> None:
+        with TemporaryDirectory() as directory:
+            queue = Path(directory) / "jobs.txt"
+            queue.write_text("--set training.max_epochs\n", encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "KEY=VALUE"):
+                load_jobs(queue)
+
     def test_choose_gpu_uses_least_loaded_available_gpu(self) -> None:
         self.assertEqual(choose_gpu([2, 0, 1, 0], limit=2), 1)
         self.assertIsNone(choose_gpu([2, 2], limit=2))

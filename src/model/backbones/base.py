@@ -19,6 +19,7 @@ class BackboneConfig:
     pretrained_weights: str | Path | None
     image_size: int
     drop_path_rate: float
+    trainable_last_n_blocks: int
     lora_last_n_blocks: int
     lora_rank: int
     lora_alpha: float
