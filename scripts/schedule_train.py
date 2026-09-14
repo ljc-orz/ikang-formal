@@ -15,7 +15,7 @@ from collections import deque
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import IO, Sequence
+from typing import IO, Callable, Sequence
 
 import torch
 
@@ -147,13 +147,14 @@ def run(
     program: Path = TRAIN_SCRIPT,
     default_log_root: Path = REPO_DIR / "scheduler_logs",
     process_kind: str = "training",
+    job_loader: Callable[[Path], list[Job]] = load_jobs,
 ) -> int:
     if args.max_processes_per_gpu <= 0:
         raise ValueError("--max-processes-per-gpu must be positive")
     if args.poll_interval <= 0:
         raise ValueError("--poll-interval must be positive")
 
-    pending = deque(load_jobs(args.queue_file))
+    pending = deque(job_loader(args.queue_file))
     gpu_count = visible_gpu_count()
     active_counts = [0] * gpu_count
     timestamp = datetime.now().astimezone().strftime("%Y%m%d-%H%M%S")

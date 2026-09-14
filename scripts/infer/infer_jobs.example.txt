@@ -1,7 +1,8 @@
 # One infer.py job per non-empty line. The scheduler assigns --device.
+# --seeds seq FIRST LAST includes both endpoints (for example, seq 2026 2028).
 # A single job may run several seeds; use separate lines to load checkpoints in parallel.
 
---checkpoint /DaTa/ljc_data/runs_dali_schel_resnet50_balanced/result_alt/best.pt --data-dir /DaTa/ljc_data/webdataset_result_merged_wide_split_50000 --split external_validation --output-dir /DaTa/ljc_data/infers/resnet50_dali_balanced_ev/alt --seeds 2026 2027 2028 --data-backend dali
---checkpoint /DaTa/ljc_data/runs_dali_schel_resnet50_balanced/result_bmi/best.pt --data-dir /DaTa/ljc_data/webdataset_result_merged_wide_split_50000 --split external_validation --output-dir /DaTa/ljc_data/infers/resnet50_dali_balanced_ev/bmi --seeds 2026 2027 2028 --data-backend dali
---checkpoint /DaTa/ljc_data/runs_dali_schel_resnet50_balanced/result_fbg/best.pt --data-dir /DaTa/ljc_data/webdataset_result_merged_wide_split_50000 --split external_validation --output-dir /DaTa/ljc_data/infers/resnet50_dali_balanced_ev/fbg --seeds 2026 2027 2028 --data-backend dali
---checkpoint /DaTa/ljc_data/runs_dali_schel_resnet50_balanced/result_hb/best.pt --data-dir /DaTa/ljc_data/webdataset_result_merged_wide_split_50000 --split external_validation --output-dir /DaTa/ljc_data/infers/resnet50_dali_balanced_ev/hb --seeds 2026 2027 2028 --data-backend dali
+--checkpoint /DaTa/ljc_data/runs_dali_schel_resnet50_balanced/result_alt/best.pt --data-dir /DaTa/ljc_data/webdataset_result_merged_wide_split_50000 --split external_validation --output-dir /DaTa/ljc_data/infers/resnet50_dali_balanced_ev/alt --seeds seq 2026 2028 --data-backend dali
+--checkpoint /DaTa/ljc_data/runs_dali_schel_resnet50_balanced/result_bmi/best.pt --data-dir /DaTa/ljc_data/webdataset_result_merged_wide_split_50000 --split external_validation --output-dir /DaTa/ljc_data/infers/resnet50_dali_balanced_ev/bmi --seeds seq 2026 2028 --data-backend dali
+--checkpoint /DaTa/ljc_data/runs_dali_schel_resnet50_balanced/result_fbg/best.pt --data-dir /DaTa/ljc_data/webdataset_result_merged_wide_split_50000 --split external_validation --output-dir /DaTa/ljc_data/infers/resnet50_dali_balanced_ev/fbg --seeds seq 2026 2028 --data-backend dali
+--checkpoint /DaTa/ljc_data/runs_dali_schel_resnet50_balanced/result_hb/best.pt --data-dir /DaTa/ljc_data/webdataset_result_merged_wide_split_50000 --split external_validation --output-dir /DaTa/ljc_data/infers/resnet50_dali_balanced_ev/hb --seeds seq 2026 2028 --data-backend dali
