@@ -129,7 +129,25 @@ def terminate_jobs(running: list[RunningJob]) -> None:
         item.log_stream.close()
 
 
-def run(args: argparse.Namespace) -> int:
+def build_command(program: Path, job: Job, gpu: int) -> list[str]:
+    """Build one scheduler-owned CUDA command."""
+    return [
+        sys.executable,
+        "-u",
+        str(program),
+        *job.arguments,
+        "--device",
+        f"cuda:{gpu}",
+    ]
+
+
+def run(
+    args: argparse.Namespace,
+    *,
+    program: Path = TRAIN_SCRIPT,
+    default_log_root: Path = REPO_DIR / "scheduler_logs",
+    process_kind: str = "training",
+) -> int:
     if args.max_processes_per_gpu <= 0:
         raise ValueError("--max-processes-per-gpu must be positive")
     if args.poll_interval <= 0:
@@ -142,7 +160,7 @@ def run(args: argparse.Namespace) -> int:
     log_dir = (
         args.log_dir.resolve()
         if args.log_dir is not None
-        else (REPO_DIR / "scheduler_logs" / timestamp)
+        else (default_log_root / timestamp)
     )
     log_dir.mkdir(parents=True, exist_ok=True)
     running: list[RunningJob] = []
@@ -164,14 +182,7 @@ def run(args: argparse.Namespace) -> int:
                 job = pending.popleft()
                 log_path = log_dir / f"job-{job.number:04d}-gpu-{gpu}.log"
                 log_stream = log_path.open("w", encoding="utf-8")
-                command = [
-                    sys.executable,
-                    "-u",
-                    str(TRAIN_SCRIPT),
-                    *job.arguments,
-                    "--device",
-                    f"cuda:{gpu}",
-                ]
+                command = build_command(program, job, gpu)
                 print(
                     f"start job={job.number} gpu={gpu} log={log_path} "
                     f"command={shlex.join(command)}",
@@ -220,7 +231,10 @@ def run(args: argparse.Namespace) -> int:
                         (item.job, item.gpu, return_code, item.log_path)
                     )
     except KeyboardInterrupt:
-        print("interrupted; terminating running training processes", file=sys.stderr)
+        print(
+            f"interrupted; terminating running {process_kind} processes",
+            file=sys.stderr,
+        )
         terminate_jobs(running)
         return 130
 

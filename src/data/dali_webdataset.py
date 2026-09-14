@@ -90,7 +90,8 @@ def _create_pipeline(
     batch_size: int,
     num_threads: int,
     device_id: int,
-    training: bool,
+    augment: bool,
+    shuffle: bool,
     image_size: int,
     mean: list[float] | tuple[float, ...],
     std: list[float] | tuple[float, ...],
@@ -236,13 +237,13 @@ def _create_pipeline(
             index_paths=spec.index_paths,
             ext=list(COMPONENTS),
             missing_component_behavior="error",
-            random_shuffle=training,
+            random_shuffle=shuffle,
             seed=seed,
             dont_use_mmap=dont_use_mmap,
             pad_last_batch=True,
             name="Reader",
         )
-        if training:
+        if augment:
             left = decode_and_augment(left_raw, 100)
             right = decode_and_augment(right_raw, 200)
         else:
@@ -292,11 +293,15 @@ class DaliFundusLoader:
         std: list[float] | tuple[float, ...],
         seed: int,
         skip_missing_target: bool,
+        identity: Literal["patient_id", "source_row"] = "patient_id",
+        augment: bool | None = None,
         dont_use_mmap: bool = False,
         prefetch_queue_depth: int = 2,
     ) -> None:
         if mode not in ("eyes", "pairs"):
             raise ValueError(f"unknown DALI loader mode: {mode!r}")
+        if identity not in ("patient_id", "source_row"):
+            raise ValueError(f"unknown patient identity mode: {identity!r}")
         if batch_size <= 0 or num_threads <= 0 or prefetch_queue_depth <= 0:
             raise ValueError("DALI batch size, threads and prefetch depth must be positive")
         if mode == "eyes" and batch_size % 2:
@@ -308,6 +313,7 @@ class DaliFundusLoader:
             )
         self.target_index = self.spec.label_names.index(target)
         self.mode = mode
+        self.identity = identity
         self.skip_missing_target = skip_missing_target
         self.patient_batch_size = batch_size // 2 if mode == "eyes" else batch_size
         self.pipeline = _create_pipeline(
@@ -315,7 +321,8 @@ class DaliFundusLoader:
             batch_size=self.patient_batch_size,
             num_threads=num_threads,
             device_id=device_id,
-            training=mode == "eyes",
+            augment=mode == "eyes" if augment is None else augment,
+            shuffle=mode == "eyes",
             image_size=image_size,
             mean=mean,
             std=std,
@@ -376,8 +383,18 @@ class DaliFundusLoader:
                     target.repeat_interleave(2),
                 )
             else:
-                patient_ids = [
-                    str(row.get("uid", row.get("id", row.get("source_row", ""))))
-                    for row in selected_metadata
-                ]
-                yield left, right, ages, sexes, target, patient_ids
+                if self.identity == "source_row":
+                    identities = []
+                    for row in selected_metadata:
+                        source_row = row.get("source_row")
+                        if isinstance(source_row, bool) or not isinstance(source_row, int):
+                            raise ValueError(
+                                f"invalid source_row in meta.json: {source_row!r}"
+                            )
+                        identities.append(source_row)
+                else:
+                    identities = [
+                        str(row.get("uid", row.get("id", row.get("source_row", ""))))
+                        for row in selected_metadata
+                    ]
+                yield left, right, ages, sexes, target, identities

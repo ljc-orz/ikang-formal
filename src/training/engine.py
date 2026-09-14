@@ -232,3 +232,43 @@ def evaluate_paired_eyes(
         "probability": mean_array,
     }
     return metrics, predictions
+
+
+@torch.inference_mode()
+def infer_paired_logits(
+    model: nn.Module,
+    loader: torch.utils.data.DataLoader,
+    device: torch.device,
+    amp_dtype: torch.dtype | None,
+    *,
+    max_batches: int | None = None,
+    progress_desc: str | None = None,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Return parquet source rows and raw left/right logits."""
+    model.eval()
+    source_rows: list[torch.Tensor] = []
+    logits: list[torch.Tensor] = []
+    patient_count = 0
+    progress_batches = _progress_batches(loader, progress_desc, max_batches, None)
+    for progress, task_id, batch in progress_batches:
+        left, right, ages, sexes, _, identities = batch
+        left = left.to(device, non_blocking=True)
+        right = right.to(device, non_blocking=True)
+        ages = ages.to(device, non_blocking=True)
+        sexes = sexes.to(device, non_blocking=True)
+        with _autocast(device, amp_dtype):
+            left_logits = model(left, ages, sexes)
+            right_logits = model(right, ages, sexes)
+        batch_rows = torch.as_tensor(identities, dtype=torch.int64).reshape(-1)
+        if batch_rows.numel() != left_logits.numel():
+            raise RuntimeError("source-row count does not match inference batch size")
+        source_rows.append(batch_rows)
+        logits.append(
+            torch.stack((left_logits.float(), right_logits.float()), dim=1).cpu()
+        )
+        patient_count += batch_rows.numel()
+        progress.update(task_id, advance=1, status=f"patients={patient_count}")
+
+    if not logits:
+        raise RuntimeError("inference loader produced no patients")
+    return torch.cat(source_rows), torch.cat(logits)
