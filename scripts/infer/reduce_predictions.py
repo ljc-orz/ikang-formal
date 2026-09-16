@@ -30,6 +30,7 @@ class InputLayout:
 @dataclass(frozen=True)
 class LoadedPredictions:
     logits: torch.Tensor
+    eye_differences: torch.Tensor
     source_rows: torch.Tensor
     targets: tuple[str, ...]
     transform: str
@@ -98,6 +99,14 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         help=(
             "PCA fitting data: all seed/patient rows, the seed mean, or one PCA "
             "per seed (default: joint)"
+        ),
+    )
+    parser.add_argument(
+        "--pca-reference",
+        type=Path,
+        help=(
+            "Reuse the shared PCA stored in an earlier aggregate file instead of "
+            "fitting on this input"
         ),
     )
     args = parser.parse_args(argv)
@@ -264,6 +273,7 @@ def _select_eye(logits: torch.Tensor, eye_order: Sequence[str], eye: str) -> tor
 def load_prediction_cube(layout: InputLayout, eye: str) -> LoadedPredictions:
     canonical_rows: torch.Tensor | None = None
     seed_matrices: list[torch.Tensor] = []
+    seed_eye_differences: list[torch.Tensor] = []
     target_by_indicator: dict[str, str] = {}
     checkpoint_by_indicator: dict[str, str] = {}
     reference_transform: str | None = None
@@ -272,6 +282,7 @@ def load_prediction_cube(layout: InputLayout, eye: str) -> LoadedPredictions:
 
     for seed in layout.seeds:
         columns: list[torch.Tensor] = []
+        eye_difference_columns: list[torch.Tensor] = []
         for indicator in layout.indicators:
             path = layout.files[indicator][seed]
             payload = _load_payload(path)
@@ -303,10 +314,17 @@ def load_prediction_cube(layout: InputLayout, eye: str) -> LoadedPredictions:
             elif not torch.equal(canonical_rows, sorted_rows):
                 raise ValueError(f"patient source_row set differs in {path}")
 
-            values = _select_eye(logits, payload.get("eye_order", ()), eye)[row_order]
-            if not bool(torch.isfinite(values).all()):
+            eye_order = payload.get("eye_order", ())
+            values = _select_eye(logits, eye_order, eye)[row_order]
+            left = _select_eye(logits, eye_order, "left")[row_order]
+            right = _select_eye(logits, eye_order, "right")[row_order]
+            eye_difference = (left - right).abs()
+            if not bool(torch.isfinite(values).all()) or not bool(
+                torch.isfinite(eye_difference).all()
+            ):
                 raise ValueError(f"non-finite logits found in {path}")
             columns.append(values)
+            eye_difference_columns.append(eye_difference)
 
             target = str(payload.get("target", ""))
             checkpoint = str(payload.get("checkpoint", ""))
@@ -337,11 +355,13 @@ def load_prediction_cube(layout: InputLayout, eye: str) -> LoadedPredictions:
                 raise ValueError(f"source_parquet differs in {path}")
 
         seed_matrices.append(torch.stack(columns, dim=1))
+        seed_eye_differences.append(torch.stack(eye_difference_columns, dim=1))
 
     if canonical_rows is None or reference_transform is None:
         raise RuntimeError("no predictions were loaded")
     return LoadedPredictions(
         logits=torch.stack(seed_matrices, dim=0),
+        eye_differences=torch.stack(seed_eye_differences, dim=0),
         source_rows=canonical_rows,
         targets=tuple(target_by_indicator[name] for name in layout.indicators),
         transform=reference_transform,
@@ -413,6 +433,68 @@ def reduce_pca(
     )
 
 
+def transform_with_pca_reference(
+    logits: torch.Tensor,
+    *,
+    reference_file: Path,
+    indicators: Sequence[str],
+    targets: Sequence[str],
+    eye: str,
+    n_components: int,
+) -> tuple[ReducedPredictions, str, Path]:
+    """Transform logits with a shared PCA previously fitted on reference data."""
+    resolved = reference_file.resolve(strict=True)
+    payload = torch.load(resolved, map_location="cpu", weights_only=True)
+    if not isinstance(payload, dict):
+        raise ValueError(f"PCA reference must contain a dictionary: {resolved}")
+    if tuple(payload.get("indicators", ())) != tuple(indicators):
+        raise ValueError(f"indicator order differs from PCA reference {resolved}")
+    if tuple(payload.get("targets", ())) != tuple(targets):
+        raise ValueError(f"target order differs from PCA reference {resolved}")
+    if payload.get("eye") != eye:
+        raise ValueError(f"eye selection differs from PCA reference {resolved}")
+
+    reducer = payload.get("reducer")
+    if not isinstance(reducer, dict) or reducer.get("method") != "pca":
+        raise ValueError(f"no PCA reducer found in reference {resolved}")
+    fit_scope = str(reducer.get("fit_scope", ""))
+    components = reducer.get("components")
+    feature_mean = reducer.get("feature_mean")
+    explained_variance = reducer.get("explained_variance")
+    explained_variance_ratio = reducer.get("explained_variance_ratio")
+    tensors = (
+        components,
+        feature_mean,
+        explained_variance,
+        explained_variance_ratio,
+    )
+    if not all(isinstance(value, torch.Tensor) for value in tensors):
+        raise ValueError(f"incomplete PCA tensors in reference {resolved}")
+    if components.ndim != 2 or feature_mean.ndim != 1:
+        raise ValueError(
+            f"PCA reference must use a shared joint/mean fit, not {fit_scope!r}"
+        )
+    if components.shape != (n_components, logits.shape[2]):
+        raise ValueError(
+            f"PCA reference components have shape {tuple(components.shape)}, expected "
+            f"({n_components}, {logits.shape[2]})"
+        )
+    if feature_mean.shape != (logits.shape[2],):
+        raise ValueError(f"invalid PCA feature mean in reference {resolved}")
+    values = (logits - feature_mean) @ components.transpose(0, 1)
+    return (
+        ReducedPredictions(
+            values=values.to(dtype=torch.float32),
+            components=components.to(dtype=torch.float32),
+            feature_mean=feature_mean.to(dtype=torch.float32),
+            explained_variance=explained_variance.to(dtype=torch.float32),
+            explained_variance_ratio=explained_variance_ratio.to(dtype=torch.float32),
+        ),
+        fit_scope,
+        resolved,
+    )
+
+
 def atomic_save(payload: dict[str, Any], destination: Path) -> None:
     destination.parent.mkdir(parents=True, exist_ok=True)
     temporary = destination.with_suffix(destination.suffix + ".tmp")
@@ -430,12 +512,26 @@ def run(args: argparse.Namespace) -> Path:
     loaded = load_prediction_cube(layout, args.eye)
     if args.method != "pca":
         raise ValueError(f"unknown reduction method: {args.method!r}")
-    reduced = reduce_pca(loaded.logits, args.n_components, args.pca_fit)
+    reducer_reference: Path | None = None
+    if args.pca_reference is None:
+        reduced = reduce_pca(loaded.logits, args.n_components, args.pca_fit)
+        reducer_fit_scope = args.pca_fit
+    else:
+        reduced, reducer_fit_scope, reducer_reference = transform_with_pca_reference(
+            loaded.logits,
+            reference_file=args.pca_reference,
+            indicators=layout.indicators,
+            targets=loaded.targets,
+            eye=args.eye,
+            n_components=args.n_components,
+        )
 
     output_file = args.output_file.resolve()
     atomic_save(
         {
+            "X": loaded.logits,
             "X_prime": reduced.values,
+            "left_right_abs_difference": loaded.eye_differences,
             "source_row": loaded.source_rows,
             "seeds": torch.tensor(layout.seeds, dtype=torch.int64),
             "indicators": layout.indicators,
@@ -447,8 +543,11 @@ def run(args: argparse.Namespace) -> Path:
             "checkpoints": loaded.checkpoints,
             "reducer": {
                 "method": args.method,
-                "fit_scope": args.pca_fit,
+                "fit_scope": reducer_fit_scope,
                 "n_components": args.n_components,
+                "reference_file": (
+                    None if reducer_reference is None else str(reducer_reference)
+                ),
                 "components": reduced.components,
                 "feature_mean": reduced.feature_mean,
                 "explained_variance": reduced.explained_variance,
@@ -459,7 +558,7 @@ def run(args: argparse.Namespace) -> Path:
     )
     print(
         f"saved X_prime={tuple(reduced.values.shape)} eye={args.eye} "
-        f"fit={args.pca_fit} output={output_file}",
+        f"fit={reducer_fit_scope} reference={reducer_reference} output={output_file}",
         flush=True,
     )
     return output_file

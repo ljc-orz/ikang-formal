@@ -152,11 +152,70 @@ class ReducePredictionsTests(unittest.TestCase):
             result = torch.load(output, map_location="cpu", weights_only=True)
 
         self.assertEqual(result["X_prime"].shape, (2, 3, 2))
+        self.assertEqual(result["X"].shape, (2, 3, 2))
+        self.assertEqual(result["left_right_abs_difference"].shape, (2, 3, 2))
+        self.assertTrue(
+            torch.equal(
+                result["X"][0],
+                torch.tensor([[4.0, 22.0], [7.0, 52.0], [11.0, 92.0]]),
+            )
+        )
+        self.assertTrue(
+            torch.equal(
+                result["left_right_abs_difference"],
+                torch.full((2, 3, 2), 2.0),
+            )
+        )
         self.assertTrue(torch.equal(result["seeds"], torch.tensor([2026, 2027])))
         self.assertTrue(torch.equal(result["source_row"], torch.tensor([2, 5, 9])))
         self.assertEqual(result["indicators"], ("alt", "bmi"))
         self.assertEqual(result["eye"], "right")
         self.assertEqual(result["reducer"]["fit_scope"], "mean")
+
+    def test_run_reuses_reference_pca_without_refitting(self) -> None:
+        with TemporaryDirectory() as directory:
+            root = Path(directory) / "predictions"
+            build_predictions(root)
+            reference_file = Path(directory) / "reference.pt"
+            transformed_file = Path(directory) / "transformed.pt"
+            run(
+                parse_args(
+                    [
+                        "--input-dir",
+                        str(root),
+                        "--output-file",
+                        str(reference_file),
+                        "--n-components",
+                        "1",
+                        "--pca-fit",
+                        "joint",
+                    ]
+                )
+            )
+            run(
+                parse_args(
+                    [
+                        "--input-dir",
+                        str(root),
+                        "--output-file",
+                        str(transformed_file),
+                        "--n-components",
+                        "1",
+                        "--pca-reference",
+                        str(reference_file),
+                    ]
+                )
+            )
+            reference = torch.load(reference_file, weights_only=True)
+            transformed = torch.load(transformed_file, weights_only=True)
+
+        expected = (
+            transformed["X"] - reference["reducer"]["feature_mean"]
+        ) @ reference["reducer"]["components"].T
+        self.assertTrue(torch.allclose(transformed["X_prime"], expected))
+        self.assertEqual(
+            transformed["reducer"]["reference_file"], str(reference_file.resolve())
+        )
 
 
 if __name__ == "__main__":
