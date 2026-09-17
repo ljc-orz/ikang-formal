@@ -5,3 +5,4 @@ __pycache__/
 runs/
 pretrained-weights/
 retfound-workspace/
+example_results/
