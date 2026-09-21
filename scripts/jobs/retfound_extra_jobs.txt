@@ -1,0 +1,8 @@
+# 使用dali后端，并且与torchvision行为对齐
+# batchsize=256
+# 使用retfound
+--data-dir /DaTa/ljc_data/webdataset_result_merged_wide_split_50000_extra --targets result_ldl_c --output-dir /DaTa/ljc_data/extra_runs/dali_sched_retfound_balanced --data-backend dali --config src/config/retfound.yaml
+--data-dir /DaTa/ljc_data/webdataset_result_merged_wide_split_50000_extra --targets result_plt --output-dir /DaTa/ljc_data/extra_runs/dali_sched_retfound_balanced --data-backend dali --config src/config/retfound.yaml
+--data-dir /DaTa/ljc_data/webdataset_result_merged_wide_split_50000_extra --targets result_tc --output-dir /DaTa/ljc_data/extra_runs/dali_sched_retfound_balanced --data-backend dali --config src/config/retfound.yaml
+--data-dir /DaTa/ljc_data/webdataset_result_merged_wide_split_50000_extra --targets result_ua --output-dir /DaTa/ljc_data/extra_runs/dali_sched_retfound_balanced --data-backend dali --config src/config/retfound.yaml
+--data-dir /DaTa/ljc_data/webdataset_result_merged_wide_split_50000_extra --targets result_urea --output-dir /DaTa/ljc_data/extra_runs/dali_sched_retfound_balanced --data-backend dali --config src/config/retfound.yaml
