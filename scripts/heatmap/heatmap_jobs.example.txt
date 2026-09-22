@@ -1,0 +1,5 @@
+# One line is one checkpoint/split job. The scheduler adds --device automatically.
+# Use a different --output-file for every line. Inline # comments are supported.
+
+--checkpoint /path/to/resnet/result_alt/best.pt --data-dir /path/to/webdataset --split internal_validation --output-file /path/to/heatmaps/resnet_alt_internal.pt --seed 2026 --data-backend dali --transform eval
+--checkpoint /path/to/retfound/result_alt/best.pt --data-dir /path/to/webdataset --split external_validation --output-file /path/to/heatmaps/retfound_alt_external.pt --seed 2026 --data-backend dali --transform eval
