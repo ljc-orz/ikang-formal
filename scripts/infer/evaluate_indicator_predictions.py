@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Evaluate per-indicator seeded inference results on internal/external sets."""
+"""Evaluate per-indicator seeded inference results on train/internal/external sets."""
 
 from __future__ import annotations
 
@@ -14,10 +14,12 @@ from typing import Any, Sequence
 import numpy as np
 import pandas as pd
 import torch
+from scipy.stats import t as student_t
 from sklearn.metrics import brier_score_loss, confusion_matrix
 
 
 # These paths may be filled in once and then the script can be run without arguments.
+TRAIN_PREDICTIONS_DIR: Path | None = None
 INTERNAL_PREDICTIONS_DIR: Path | None = None
 EXTERNAL_PREDICTIONS_DIR: Path | None = None
 OUTPUT_DIR: Path | None = None
@@ -53,6 +55,12 @@ class IndicatorPredictions:
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
+        "--train-predictions-dir",
+        type=Path,
+        default=TRAIN_PREDICTIONS_DIR,
+        help="Optional root containing training-set indicator subdirectories",
+    )
+    parser.add_argument(
         "--internal-predictions-dir",
         type=Path,
         default=INTERNAL_PREDICTIONS_DIR,
@@ -87,6 +95,11 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         help="Eye probability to evaluate; mean averages left/right probabilities",
     )
     parser.add_argument(
+        "--train-parquet",
+        type=Path,
+        help="Override source_parquet metadata for the training set",
+    )
+    parser.add_argument(
         "--internal-parquet",
         type=Path,
         help="Override source_parquet metadata for the internal set",
@@ -95,18 +108,6 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         "--external-parquet",
         type=Path,
         help="Override source_parquet metadata for the external set",
-    )
-    parser.add_argument(
-        "--bootstrap-samples",
-        type=int,
-        default=1_000,
-        help="TTA seed-bootstrap repetitions for 95%% CI (default: 1000)",
-    )
-    parser.add_argument(
-        "--bootstrap-seed",
-        type=int,
-        default=20260917,
-        help="Random seed for TTA bootstrap",
     )
     args = parser.parse_args(argv)
     try:
@@ -126,8 +127,6 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         parser.error(
             "set the constants at the top of the script or provide " + ", ".join(missing)
         )
-    if args.bootstrap_samples <= 0:
-        parser.error("--bootstrap-samples must be positive")
     return args
 
 
@@ -297,7 +296,7 @@ def metric_row(
     }
 
 
-CI_METRICS = (
+SEED_SUMMARY_METRICS = (
     "auroc",
     "auprc",
     "brier",
@@ -329,39 +328,64 @@ def performance_values(
     }
 
 
-def tta_bootstrap_intervals(
+def per_seed_metric_rows(
     data: IndicatorPredictions,
     labels: np.ndarray,
     *,
     threshold: float,
-    samples: int,
-    rng: np.random.Generator,
-) -> dict[str, float]:
-    """Bootstrap TTA seeds while keeping the evaluated patient cohort fixed."""
+) -> list[dict[str, Any]]:
+    """Compute every metric independently for each stochastic inference seed."""
     if len(data.seeds) < 2:
         raise ValueError(
-            f"{data.indicator}/{data.split}: TTA confidence intervals require "
+            f"{data.indicator}/{data.split}: t confidence intervals require "
             "at least two seeds"
         )
     valid = np.isin(labels, (0, 1))
     valid_labels = labels[valid].astype(np.int64, copy=False)
     probabilities = data.seed_probabilities[:, valid].astype(np.float64, copy=False)
-    distributions = {
-        metric: np.empty(samples, dtype=np.float64) for metric in CI_METRICS
-    }
-    seed_count = probabilities.shape[0]
-    for iteration in range(samples):
-        sampled_seeds = rng.integers(0, seed_count, size=seed_count)
-        sampled_mean = probabilities[sampled_seeds].mean(axis=0)
-        values = performance_values(valid_labels, sampled_mean, threshold)
-        for metric in CI_METRICS:
-            distributions[metric][iteration] = values[metric]
-    intervals: dict[str, float] = {}
-    for metric, values in distributions.items():
-        low, high = np.quantile(values, (0.025, 0.975))
-        intervals[f"{metric}_ci_low"] = float(low)
-        intervals[f"{metric}_ci_high"] = float(high)
-    return intervals
+    rows: list[dict[str, Any]] = []
+    for seed, seed_probabilities in zip(data.seeds, probabilities):
+        rows.append(
+            {
+                "split": data.split,
+                "indicator": data.indicator,
+                "target": data.target,
+                "seed": int(seed),
+                "patients": len(labels),
+                "labeled_patients": int(valid.sum()),
+                "eye": data.eye,
+                "transform": data.transform,
+                "checkpoint": data.checkpoint,
+                "threshold": float(threshold),
+                **performance_values(
+                    valid_labels,
+                    seed_probabilities,
+                    threshold,
+                ),
+            }
+        )
+    return rows
+
+
+def summarize_seed_metrics(seed_rows: Sequence[dict[str, Any]]) -> dict[str, float]:
+    """Return mean, sample standard deviation and two-sided 95% t intervals."""
+    count = len(seed_rows)
+    if count < 2:
+        raise ValueError("seed metric summaries require at least two seeds")
+    critical_value = float(student_t.ppf(0.975, df=count - 1))
+    summary: dict[str, float] = {}
+    for metric in SEED_SUMMARY_METRICS:
+        values = np.asarray([row[metric] for row in seed_rows], dtype=np.float64)
+        if not bool(np.isfinite(values).all()):
+            raise ValueError(f"non-finite per-seed values for metric {metric!r}")
+        mean = float(values.mean())
+        std = float(values.std(ddof=1))
+        margin = critical_value * std / np.sqrt(count)
+        summary[f"{metric}_mean"] = mean
+        summary[f"{metric}_std"] = std
+        summary[f"{metric}_ci_low"] = mean - margin
+        summary[f"{metric}_ci_high"] = mean + margin
+    return summary
 
 
 def _resolve_parquet(data: IndicatorPredictions, override: Path | None) -> Path:
@@ -403,118 +427,162 @@ def write_csv(path: Path, rows: Sequence[dict[str, Any]]) -> None:
         writer.writerows(rows)
 
 
-def run(args: argparse.Namespace) -> Path:
-    internal_layout = discover_layout(
-        args.internal_predictions_dir,
-        indicators=args.indicators,
-        split="internal_validation",
-        seeds=args.seeds,
+def load_split_predictions(
+    root: Path,
+    *,
+    split: str,
+    indicators: Sequence[str] | None,
+    seeds: Sequence[int] | None,
+    eye: str,
+) -> tuple[InputLayout, dict[str, IndicatorPredictions]]:
+    layout = discover_layout(
+        root,
+        indicators=indicators,
+        split=split,
+        seeds=seeds,
     )
-    external_layout = discover_layout(
-        args.external_predictions_dir,
-        indicators=internal_layout.indicators,
-        split="external_validation",
-        seeds=args.seeds,
-    )
-    if internal_layout.seeds != external_layout.seeds:
-        raise ValueError(
-            "internal/external seed sets differ; specify --seeds to select a common set"
-        )
-    internal = {
-        indicator: load_indicator_predictions(internal_layout, indicator, args.eye)
-        for indicator in internal_layout.indicators
+    predictions = {
+        indicator: load_indicator_predictions(layout, indicator, eye)
+        for indicator in layout.indicators
     }
-    external = {
-        indicator: load_indicator_predictions(external_layout, indicator, args.eye)
-        for indicator in external_layout.indicators
-    }
-    for indicator in internal_layout.indicators:
-        if internal[indicator].target != external[indicator].target:
-            raise ValueError(f"target differs between datasets for {indicator}")
-        if internal[indicator].checkpoint != external[indicator].checkpoint:
-            raise ValueError(f"checkpoint differs between datasets for {indicator}")
-        if internal[indicator].transform != external[indicator].transform:
-            raise ValueError(f"transform differs between datasets for {indicator}")
+    return layout, predictions
 
-    internal_labels = load_labels(list(internal.values()), args.internal_parquet)
-    external_labels = load_labels(list(external.values()), args.external_parquet)
+
+def run(args: argparse.Namespace) -> Path:
+    internal_layout, internal = load_split_predictions(
+        args.internal_predictions_dir,
+        split="internal_validation",
+        indicators=args.indicators,
+        seeds=args.seeds,
+        eye=args.eye,
+    )
+    _external_layout, external = load_split_predictions(
+        args.external_predictions_dir,
+        split="external_validation",
+        indicators=internal_layout.indicators,
+        seeds=internal_layout.seeds,
+        eye=args.eye,
+    )
+    datasets: dict[str, dict[str, IndicatorPredictions]] = {
+        "internal_validation": internal,
+        "external_validation": external,
+    }
+    parquet_overrides = {
+        "internal_validation": args.internal_parquet,
+        "external_validation": args.external_parquet,
+    }
+    if args.train_predictions_dir is not None:
+        _train_layout, train = load_split_predictions(
+            args.train_predictions_dir,
+            split="train",
+            indicators=internal_layout.indicators,
+            seeds=internal_layout.seeds,
+            eye=args.eye,
+        )
+        datasets = {
+            "train": train,
+            **datasets,
+        }
+        parquet_overrides = {
+            "train": args.train_parquet,
+            **parquet_overrides,
+        }
+
+    for indicator in internal_layout.indicators:
+        reference = internal[indicator]
+        for split, predictions in datasets.items():
+            current = predictions[indicator]
+            if current.target != reference.target:
+                raise ValueError(
+                    f"target differs between internal_validation and {split} "
+                    f"for {indicator}"
+                )
+            if current.checkpoint != reference.checkpoint:
+                raise ValueError(
+                    f"checkpoint differs between internal_validation and {split} "
+                    f"for {indicator}"
+                )
+            if current.transform != reference.transform:
+                raise ValueError(
+                    f"transform differs between internal_validation and {split} "
+                    f"for {indicator}"
+                )
+
+    labels_by_split = {
+        split: load_labels(list(predictions.values()), parquet_overrides[split])
+        for split, predictions in datasets.items()
+    }
     rows: list[dict[str, Any]] = []
+    seed_rows: list[dict[str, Any]] = []
     thresholds: dict[str, float] = {}
-    rng = np.random.default_rng(args.bootstrap_seed)
     for indicator_index, indicator in enumerate(internal_layout.indicators, start=1):
         print(
             f"[{indicator_index}/{len(internal_layout.indicators)}] "
-            f"evaluating {indicator} with {args.bootstrap_samples} TTA bootstraps",
+            f"evaluating {indicator} over {len(internal_layout.seeds)} seeds",
             flush=True,
         )
-        labels = internal_labels[indicator]
+        labels = labels_by_split["internal_validation"][indicator]
         valid = np.isin(labels, (0, 1))
         if not valid.any():
             raise ValueError(f"{indicator}/internal_validation has no binary labels")
         thresholds[indicator] = select_youden_threshold(
             labels[valid].astype(np.int64), internal[indicator].probabilities[valid]
         )
-        internal_row = metric_row(
-            internal[indicator], labels, threshold=thresholds[indicator]
-        )
-        internal_row.update(
-            tta_bootstrap_intervals(
-                internal[indicator],
-                labels,
+        for split, predictions in datasets.items():
+            data = predictions[indicator]
+            row = metric_row(
+                data,
+                labels_by_split[split][indicator],
                 threshold=thresholds[indicator],
-                samples=args.bootstrap_samples,
-                rng=rng,
             )
-        )
-        rows.append(internal_row)
-        external_row = metric_row(
-            external[indicator],
-            external_labels[indicator],
-            threshold=thresholds[indicator],
-        )
-        external_row.update(
-            tta_bootstrap_intervals(
-                external[indicator],
-                external_labels[indicator],
+            split_seed_rows = per_seed_metric_rows(
+                data,
+                labels_by_split[split][indicator],
                 threshold=thresholds[indicator],
-                samples=args.bootstrap_samples,
-                rng=rng,
             )
-        )
-        rows.append(external_row)
+            row.update(summarize_seed_metrics(split_seed_rows))
+            rows.append(row)
+            seed_rows.extend(split_seed_rows)
 
     output_dir = args.output_dir.resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
     write_csv(output_dir / "indicator_metrics.csv", rows)
+    write_csv(output_dir / "indicator_seed_metrics.csv", seed_rows)
     summary = {
-        "probability_aggregation": "mean sigmoid probability across selected seeds and eyes",
+        "ensemble_probability_aggregation": (
+            "mean sigmoid probability across selected seeds and eyes"
+        ),
+        "seed_performance_summary": "mean and sample standard deviation (ddof=1)",
         "threshold_source": "internal_validation Youden index",
         "confidence_interval": {
             "level": 0.95,
-            "method": "nonparametric bootstrap over TTA seeds",
+            "method": "two-sided Student t interval over per-seed metric values",
+            "degrees_of_freedom": len(internal_layout.seeds) - 1,
+            "formula": "mean +/- t(0.975, n-1) * sample_std / sqrt(n)",
             "patient_cohort": "fixed",
-            "samples": args.bootstrap_samples,
-            "random_seed": args.bootstrap_seed,
         },
         "eye": args.eye,
         "seeds": list(internal_layout.seeds),
         "indicators": list(internal_layout.indicators),
+        "splits": list(datasets),
         "metrics": rows,
+        "seed_metrics": seed_rows,
     }
     (output_dir / "indicator_metrics.json").write_text(
         json.dumps(summary, ensure_ascii=False, indent=2, allow_nan=False) + "\n",
         encoding="utf-8",
     )
     print(
-        "split                 indicator      AUROC (TTA 95% CI)"
-        "                   AUPRC (TTA 95% CI)",
+        "split                 indicator      AUROC Mean +/- Std [95% t CI]"
+        "                   ensemble AUROC",
         flush=True,
     )
     for row in rows:
         print(
             f"{row['split']:<21} {row['indicator']:<12} "
-            f"{row['auroc']:.4f} [{row['auroc_ci_low']:.4f}, {row['auroc_ci_high']:.4f}]  "
-            f"{row['auprc']:.4f} [{row['auprc_ci_low']:.4f}, {row['auprc_ci_high']:.4f}]",
+            f"{row['auroc_mean']:.4f} +/- {row['auroc_std']:.4f} "
+            f"[{row['auroc_ci_low']:.4f}, {row['auroc_ci_high']:.4f}]  "
+            f"{row['auroc']:.4f}",
             flush=True,
         )
     print(f"saved per-indicator metrics to {output_dir}", flush=True)

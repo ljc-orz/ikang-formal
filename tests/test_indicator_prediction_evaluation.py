@@ -9,9 +9,9 @@ from tempfile import TemporaryDirectory
 import numpy as np
 import pandas as pd
 import torch
+from scipy.stats import t as student_t
 
 from scripts.infer.evaluate_indicator_predictions import parse_args, run
-from src.training import select_youden_threshold
 
 
 def write_prediction_set(
@@ -22,12 +22,16 @@ def write_prediction_set(
         "alt": torch.tensor([-3.0, -1.0, -0.5, 0.5, 1.0, 3.0]),
         "bmi": torch.tensor([-2.0, -0.2, -1.0, 0.4, 2.0, 1.2]),
     }
+    jitter = {
+        "alt": torch.tensor([0.0, 0.0, 0.0, 0.0, -3.0, 0.0]),
+        "bmi": torch.tensor([0.0, 0.0, 1.5, 0.0, -2.0, 0.0]),
+    }
     for indicator, patient_logits in base.items():
         directory = root / indicator
         directory.mkdir(parents=True, exist_ok=True)
         for seed in (2026, 2027):
-            offset = 0.1 * (seed - 2026)
-            ordered = patient_logits[rows] + offset
+            seed_logits = patient_logits + jitter[indicator] * (seed - 2026)
+            ordered = seed_logits[rows]
             logits = torch.stack((ordered - 0.2, ordered + 0.2), dim=1)
             torch.save(
                 {
@@ -58,6 +62,8 @@ class IndicatorPredictionEvaluationTests(unittest.TestCase):
             ).to_parquet(parquet)
             internal = root / "internal"
             external = root / "external"
+            train = root / "train"
+            write_prediction_set(train, parquet, "train")
             write_prediction_set(internal, parquet, "internal_validation")
             write_prediction_set(
                 external, parquet, "external_validation", reverse=True
@@ -70,16 +76,14 @@ class IndicatorPredictionEvaluationTests(unittest.TestCase):
                         str(internal),
                         "--external-predictions-dir",
                         str(external),
+                        "--train-predictions-dir",
+                        str(train),
                         "--output-dir",
                         str(output),
                         "--seeds",
                         "seq",
                         "2026",
                         "2027",
-                        "--bootstrap-samples",
-                        "30",
-                        "--bootstrap-seed",
-                        "11",
                     ]
                 )
             )
@@ -87,42 +91,52 @@ class IndicatorPredictionEvaluationTests(unittest.TestCase):
                 encoding="utf-8", newline=""
             ) as stream:
                 rows = list(csv.DictReader(stream))
+            with (output / "indicator_seed_metrics.csv").open(
+                encoding="utf-8", newline=""
+            ) as stream:
+                seed_rows = list(csv.DictReader(stream))
             summary = json.loads((output / "indicator_metrics.json").read_text())
 
-        self.assertEqual(len(rows), 4)
+        self.assertEqual(len(rows), 6)
+        self.assertEqual(len(seed_rows), 12)
         self.assertEqual(summary["seeds"], [2026, 2027])
-        self.assertEqual(summary["confidence_interval"]["samples"], 30)
+        self.assertEqual(
+            summary["splits"],
+            ["train", "internal_validation", "external_validation"],
+        )
+        self.assertEqual(summary["confidence_interval"]["degrees_of_freedom"], 1)
         self.assertEqual(
             summary["confidence_interval"]["method"],
-            "nonparametric bootstrap over TTA seeds",
+            "two-sided Student t interval over per-seed metric values",
         )
         by_key = {(row["indicator"], row["split"]): row for row in rows}
         self.assertEqual(
             by_key[("alt", "internal_validation")]["threshold"],
             by_key[("alt", "external_validation")]["threshold"],
         )
-        base = torch.tensor([-3.0, -1.0, -0.5, 0.5, 1.0, 3.0])
-        expected_probabilities = torch.stack(
+        self.assertEqual(
+            by_key[("alt", "internal_validation")]["threshold"],
+            by_key[("alt", "train")]["threshold"],
+        )
+        alt_external_seed_aurocs = np.asarray(
             [
-                torch.stack((base + offset - 0.2, base + offset + 0.2), dim=1)
-                .sigmoid()
-                .mean(dim=1)
-                for offset in (0.0, 0.1)
+                float(row["auroc"])
+                for row in seed_rows
+                if row["indicator"] == "alt"
+                and row["split"] == "external_validation"
             ]
-        ).mean(dim=0).numpy()
-        expected_threshold = select_youden_threshold(
-            np.array([0, 0, 0, 1, 1, 1]), expected_probabilities
+        )
+        expected_mean = float(alt_external_seed_aurocs.mean())
+        expected_std = float(alt_external_seed_aurocs.std(ddof=1))
+        expected_margin = float(student_t.ppf(0.975, 1)) * expected_std / np.sqrt(2)
+        result = by_key[("alt", "external_validation")]
+        self.assertAlmostEqual(float(result["auroc_mean"]), expected_mean)
+        self.assertAlmostEqual(float(result["auroc_std"]), expected_std)
+        self.assertAlmostEqual(
+            float(result["auroc_ci_low"]), expected_mean - expected_margin
         )
         self.assertAlmostEqual(
-            float(by_key[("alt", "internal_validation")]["threshold"]),
-            expected_threshold,
-        )
-        self.assertEqual(float(by_key[("alt", "external_validation")]["auroc"]), 1.0)
-        self.assertEqual(
-            float(by_key[("alt", "external_validation")]["auroc_ci_low"]), 1.0
-        )
-        self.assertEqual(
-            float(by_key[("alt", "external_validation")]["auroc_ci_high"]), 1.0
+            float(result["auroc_ci_high"]), expected_mean + expected_margin
         )
 
 
