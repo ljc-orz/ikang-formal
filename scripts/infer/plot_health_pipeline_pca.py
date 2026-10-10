@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Sequence
@@ -15,8 +16,14 @@ matplotlib.use("Agg")
 
 import matplotlib.pyplot as plt  # noqa: E402
 import numpy as np  # noqa: E402
-import pandas as pd  # noqa: E402
 import torch  # noqa: E402
+
+
+REPO_DIR = Path(__file__).resolve().parents[2]
+if str(REPO_DIR) not in sys.path:
+    sys.path.insert(0, str(REPO_DIR))
+
+from src.health_diagnosis import load_target_values, parse_source_parquets  # noqa: E402
 
 
 # Fill this path to run the script without --health-pipeline-output.
@@ -48,6 +55,7 @@ class PcaDataset:
     eye: str
     transform: str
     source_parquet: str | None
+    source_parquets: dict[str, str | None]
     components: np.ndarray
     explained_variance_ratio: np.ndarray
 
@@ -136,6 +144,12 @@ def load_pca_dataset(path: Path, name: str, title: str) -> PcaDataset:
     if components.shape[0] != component_count or explained_ratio.shape[0] != component_count:
         raise ValueError(f"{resolved}: reducer dimensions do not match X_prime")
     source_parquet = payload.get("source_parquet")
+    source_parquets = parse_source_parquets(
+        indicators,
+        source_parquet,
+        payload.get("source_parquets"),
+        context=resolved,
+    )
     return PcaDataset(
         name=name,
         title=title,
@@ -148,6 +162,7 @@ def load_pca_dataset(path: Path, name: str, title: str) -> PcaDataset:
         eye=str(payload.get("eye", "")),
         transform=str(payload.get("transform", "")),
         source_parquet=None if source_parquet is None else str(source_parquet),
+        source_parquets=source_parquets,
         components=components.to(dtype=torch.float32).numpy(),
         explained_variance_ratio=explained_ratio.to(dtype=torch.float32).numpy(),
     )
@@ -177,22 +192,17 @@ def validate_shared_pca(datasets: Sequence[PcaDataset]) -> None:
 
 
 def load_health_labels(data: PcaDataset, parquet_override: Path | None) -> np.ndarray:
-    if parquet_override is None:
-        if data.source_parquet is None:
-            raise ValueError(f"{data.path} has no source_parquet; provide --parquet")
-        parquet = Path(data.source_parquet)
-    else:
-        parquet = parquet_override
-    resolved = parquet.expanduser().resolve(strict=True)
-    frame = pd.read_parquet(resolved, columns=list(data.targets))
-    rows = data.source_rows
-    if rows.size and (rows.min() < 0 or rows.max() >= len(frame)):
-        raise ValueError(f"source_row is outside parquet bounds in {data.path}")
-    values = frame.iloc[rows].apply(pd.to_numeric, errors="coerce").to_numpy(
-        dtype=np.float64, na_value=np.nan
+    values, _sources = load_target_values(
+        indicators=data.indicators,
+        targets=data.targets,
+        source_rows=data.source_rows,
+        source_parquet=data.source_parquet,
+        source_parquets=data.source_parquets,
+        parquet=parquet_override,
+        context=data.path,
     )
     valid = np.logical_or(values == 0, values == 1).all(axis=1)
-    labels = np.full(len(rows), -1, dtype=np.int64)
+    labels = np.full(len(data.source_rows), -1, dtype=np.int64)
     labels[valid] = (values[valid] == 1).any(axis=1).astype(np.int64)
     return labels
 

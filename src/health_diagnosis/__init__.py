@@ -12,6 +12,8 @@ from .io import (
     check_compatible,
     load_abnormal_labels,
     load_aggregated_predictions,
+    load_target_values,
+    parse_source_parquets,
 )
 from .model import (
     DiagnosticOutput,
@@ -33,5 +35,7 @@ __all__ = [
     "fit_health_reference",
     "load_abnormal_labels",
     "load_aggregated_predictions",
+    "load_target_values",
     "mahalanobis_distance",
+    "parse_source_parquets",
 ]

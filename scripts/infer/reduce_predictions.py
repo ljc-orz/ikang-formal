@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any, Sequence
 
 import numpy as np
+import pandas as pd
 import torch
 from sklearn.decomposition import PCA
 
@@ -35,6 +36,7 @@ class LoadedPredictions:
     targets: tuple[str, ...]
     transform: str
     source_parquet: str | None
+    source_parquets: dict[str, str | None]
     checkpoints: dict[str, str]
 
 
@@ -270,6 +272,68 @@ def _select_eye(logits: torch.Tensor, eye_order: Sequence[str], eye: str) -> tor
     return logits[:, order.index(eye)]
 
 
+SOURCE_IDENTITY_COLUMNS = ("uid", "id", "split", "image_path_1", "image_path_2")
+
+
+def validate_source_parquet_alignment(
+    source_parquets: dict[str, str | None],
+    source_rows: torch.Tensor,
+) -> dict[str, str | None]:
+    """Resolve sources and verify patient identities when indicators span parquets."""
+    resolved: dict[str, str | None] = {}
+    for indicator, value in source_parquets.items():
+        resolved[indicator] = (
+            None
+            if value is None
+            else str(Path(value).expanduser().resolve())
+        )
+    distinct = {value for value in resolved.values() if value is not None}
+    if len(distinct) <= 1:
+        return resolved
+    missing = sorted(
+        indicator for indicator, value in resolved.items() if value is None
+    )
+    if missing:
+        raise ValueError(
+            "cannot verify mixed source parquets because source_parquet is missing "
+            f"for indicators: {missing}"
+        )
+
+    rows = source_rows.numpy()
+    reference_values: np.ndarray | None = None
+    reference_path: str | None = None
+    for path_string in sorted(distinct):
+        path = Path(path_string)
+        try:
+            frame = pd.read_parquet(path, columns=list(SOURCE_IDENTITY_COLUMNS))
+        except Exception as exc:
+            raise ValueError(
+                f"cannot read identity columns {SOURCE_IDENTITY_COLUMNS} from {path}"
+            ) from exc
+        if rows.size and (rows.min() < 0 or rows.max() >= len(frame)):
+            raise ValueError(
+                f"source_row is outside parquet row range [0, {len(frame)}) in {path}"
+            )
+        identities = (
+            frame.iloc[rows]
+            .astype("string")
+            .fillna("<missing>")
+            .to_numpy(dtype=str)
+        )
+        if reference_values is None:
+            reference_values = identities
+            reference_path = path_string
+            continue
+        matches = np.equal(reference_values, identities).all(axis=1)
+        if not bool(matches.all()):
+            index = int(np.flatnonzero(~matches)[0])
+            raise ValueError(
+                "source parquets do not describe the same patient at "
+                f"source_row={int(rows[index])}: {reference_path} vs {path}"
+            )
+    return resolved
+
+
 def load_prediction_cube(layout: InputLayout, eye: str) -> LoadedPredictions:
     canonical_rows: torch.Tensor | None = None
     seed_matrices: list[torch.Tensor] = []
@@ -277,8 +341,7 @@ def load_prediction_cube(layout: InputLayout, eye: str) -> LoadedPredictions:
     target_by_indicator: dict[str, str] = {}
     checkpoint_by_indicator: dict[str, str] = {}
     reference_transform: str | None = None
-    reference_parquet: str | None = None
-    parquet_initialized = False
+    parquet_by_indicator: dict[str, str | None] = {}
 
     for seed in layout.seeds:
         columns: list[torch.Tensor] = []
@@ -348,24 +411,34 @@ def load_prediction_cube(layout: InputLayout, eye: str) -> LoadedPredictions:
             source_parquet = (
                 None if source_parquet_value is None else str(source_parquet_value)
             )
-            if not parquet_initialized:
-                reference_parquet = source_parquet
-                parquet_initialized = True
-            elif source_parquet != reference_parquet:
-                raise ValueError(f"source_parquet differs in {path}")
+            if indicator not in parquet_by_indicator:
+                parquet_by_indicator[indicator] = source_parquet
+            elif source_parquet != parquet_by_indicator[indicator]:
+                raise ValueError(
+                    f"source_parquet changed between seeds for {indicator!r} in {path}"
+                )
 
         seed_matrices.append(torch.stack(columns, dim=1))
         seed_eye_differences.append(torch.stack(eye_difference_columns, dim=1))
 
     if canonical_rows is None or reference_transform is None:
         raise RuntimeError("no predictions were loaded")
+    source_parquets = validate_source_parquet_alignment(
+        parquet_by_indicator,
+        canonical_rows,
+    )
+    distinct_parquets = set(source_parquets.values())
+    source_parquet = (
+        next(iter(distinct_parquets)) if len(distinct_parquets) == 1 else None
+    )
     return LoadedPredictions(
         logits=torch.stack(seed_matrices, dim=0),
         eye_differences=torch.stack(seed_eye_differences, dim=0),
         source_rows=canonical_rows,
         targets=tuple(target_by_indicator[name] for name in layout.indicators),
         transform=reference_transform,
-        source_parquet=reference_parquet,
+        source_parquet=source_parquet,
+        source_parquets=source_parquets,
         checkpoints={name: checkpoint_by_indicator[name] for name in layout.indicators},
     )
 
@@ -540,6 +613,7 @@ def run(args: argparse.Namespace) -> Path:
             "split": layout.split,
             "transform": loaded.transform,
             "source_parquet": loaded.source_parquet,
+            "source_parquets": loaded.source_parquets,
             "checkpoints": loaded.checkpoints,
             "reducer": {
                 "method": args.method,

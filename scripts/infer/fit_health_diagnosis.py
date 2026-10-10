@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any, Sequence
 
@@ -82,7 +83,7 @@ def _prediction_payload(
     model: HealthDiagnosticModel,
     data: AggregatedPredictions,
     labels: torch.Tensor,
-    parquet: Path,
+    parquet_sources: Mapping[str, Path],
 ) -> tuple[dict[str, Any], dict[str, float]]:
     output = model.predict(data.logits, data.eye_differences)
     valid = labels >= 0
@@ -100,6 +101,7 @@ def _prediction_payload(
                 threshold=model.decision_threshold,
             )
         )
+    distinct_sources = set(parquet_sources.values())
     payload = {
         "source_row": data.source_rows,
         "labels": labels,
@@ -117,7 +119,13 @@ def _prediction_payload(
         "seeds": data.seeds,
         "eye": data.eye,
         "split": data.split,
-        "source_parquet": str(parquet),
+        "source_parquet": (
+            str(next(iter(distinct_sources))) if len(distinct_sources) == 1 else None
+        ),
+        "source_parquets": {
+            indicator: str(parquet_sources[indicator])
+            for indicator in data.indicators
+        },
         "decision_threshold": model.decision_threshold,
     }
     return payload, metrics
@@ -146,7 +154,7 @@ def run(args: argparse.Namespace) -> dict[str, dict[str, float]]:
         calibration_data, args.parquet
     )
     test_labels: torch.Tensor | None = None
-    test_parquet: Path | None = None
+    test_parquet: dict[str, Path] | None = None
     if test_data is not None:
         test_labels, test_parquet = load_abnormal_labels(test_data, args.parquet)
 
@@ -190,8 +198,10 @@ def run(args: argparse.Namespace) -> dict[str, dict[str, float]]:
     if test_data is not None and test_labels is not None and test_parquet is not None:
         datasets.append(("test", test_data, test_labels, test_parquet))
     all_metrics: dict[str, dict[str, float]] = {}
-    for name, data, labels, parquet in datasets:
-        payload, metrics = _prediction_payload(model, data, labels, parquet)
+    for name, data, labels, parquet_sources in datasets:
+        payload, metrics = _prediction_payload(
+            model, data, labels, parquet_sources
+        )
         _atomic_torch_save(payload, output_dir / f"{name}_predictions.pt")
         all_metrics[name] = metrics
         print(

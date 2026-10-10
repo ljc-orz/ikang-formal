@@ -8,7 +8,11 @@ import pandas as pd
 import torch
 
 from scripts.infer.fit_health_diagnosis import parse_args, run
-from src.health_diagnosis import HealthDiagnosticModel, load_aggregated_predictions
+from src.health_diagnosis import (
+    HealthDiagnosticModel,
+    load_abnormal_labels,
+    load_aggregated_predictions,
+)
 
 
 def write_aggregate(path: Path, parquet: Path, split: str) -> None:
@@ -39,6 +43,41 @@ def write_aggregate(path: Path, parquet: Path, split: str) -> None:
 
 
 class HealthDiagnosisWorkflowTests(unittest.TestCase):
+    def test_loads_health_labels_from_per_indicator_parquets(self) -> None:
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            alt_parquet = root / "alt.parquet"
+            bmi_parquet = root / "bmi.parquet"
+            pd.DataFrame({"result_alt": [0, 1, 0]}).to_parquet(alt_parquet)
+            pd.DataFrame({"result_bmi": [0, 0, -1]}).to_parquet(bmi_parquet)
+            aggregate = root / "aggregate.pt"
+            logits = torch.zeros(2, 3, 2)
+            torch.save(
+                {
+                    "X": logits,
+                    "left_right_abs_difference": torch.zeros_like(logits),
+                    "source_row": torch.arange(3, dtype=torch.int64),
+                    "seeds": torch.tensor([2026, 2027], dtype=torch.int64),
+                    "indicators": ("alt", "bmi"),
+                    "targets": ("result_alt", "result_bmi"),
+                    "eye": "mean",
+                    "split": "train",
+                    "transform": "train",
+                    "source_parquet": None,
+                    "source_parquets": {
+                        "alt": str(alt_parquet),
+                        "bmi": str(bmi_parquet),
+                    },
+                },
+                aggregate,
+            )
+            loaded = load_aggregated_predictions(aggregate)
+            labels, sources = load_abnormal_labels(loaded)
+
+        self.assertTrue(torch.equal(labels, torch.tensor([0, 1, -1])))
+        self.assertEqual(sources["alt"], alt_parquet.resolve())
+        self.assertEqual(sources["bmi"], bmi_parquet.resolve())
+
     def test_fit_calibrate_and_test_workflow(self) -> None:
         with TemporaryDirectory() as directory:
             root = Path(directory)

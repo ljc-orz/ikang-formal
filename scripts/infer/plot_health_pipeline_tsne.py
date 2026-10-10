@@ -25,6 +25,7 @@ REPO_DIR = Path(__file__).resolve().parents[2]
 if str(REPO_DIR) not in sys.path:
     sys.path.insert(0, str(REPO_DIR))
 
+from src.health_diagnosis import parse_source_parquets  # noqa: E402
 from scripts.infer.plot_health_pipeline_pca import (  # noqa: E402
     CLASS_STYLES,
     DATASETS,
@@ -50,6 +51,7 @@ class TsneDataset:
     eye: str
     transform: str
     source_parquet: str | None
+    source_parquets: dict[str, str | None]
     pca_components: np.ndarray | None
 
 
@@ -160,6 +162,12 @@ def load_tsne_dataset(
             f"{resolved}: split metadata is {stored_split!r}, expected {name!r}"
         )
     source_parquet = payload.get("source_parquet")
+    source_parquets = parse_source_parquets(
+        indicators,
+        source_parquet,
+        payload.get("source_parquets"),
+        context=resolved,
+    )
     return TsneDataset(
         name=name,
         title=title,
@@ -173,6 +181,7 @@ def load_tsne_dataset(
         eye=str(payload.get("eye", "")),
         transform=str(payload.get("transform", "")),
         source_parquet=None if source_parquet is None else str(source_parquet),
+        source_parquets=source_parquets,
         pca_components=pca_components,
     )
 

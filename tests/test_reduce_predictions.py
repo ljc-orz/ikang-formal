@@ -4,6 +4,7 @@ import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
+import pandas as pd
 import torch
 
 from scripts.infer.reduce_predictions import (
@@ -22,6 +23,7 @@ def write_prediction(
     seed: int,
     rows: list[int],
     values: dict[int, float],
+    source_parquet: str = "/data/source.parquet",
 ) -> None:
     directory = root / indicator
     directory.mkdir(parents=True, exist_ok=True)
@@ -38,19 +40,23 @@ def write_prediction(
             "split": "external_validation",
             "transform": "train",
             "checkpoint": f"/models/{indicator}/best.pt",
-            "source_parquet": "/data/source.parquet",
+            "source_parquet": source_parquet,
         },
         directory / f"result_{indicator}.external_validation.seed-{seed}.pt",
     )
 
 
-def build_predictions(root: Path) -> None:
+def build_predictions(
+    root: Path, source_parquets: dict[str, str] | None = None
+) -> None:
+    source_parquets = source_parquets or {}
     write_prediction(
         root,
         "alt",
         2026,
         [5, 2, 9],
         {2: 2.0, 5: 5.0, 9: 9.0},
+        source_parquets.get("alt", "/data/source.parquet"),
     )
     write_prediction(
         root,
@@ -58,6 +64,7 @@ def build_predictions(root: Path) -> None:
         2026,
         [9, 5, 2],
         {2: 20.0, 5: 50.0, 9: 90.0},
+        source_parquets.get("bmi", "/data/source.parquet"),
     )
     write_prediction(
         root,
@@ -65,6 +72,7 @@ def build_predictions(root: Path) -> None:
         2027,
         [9, 2, 5],
         {2: 102.0, 5: 105.0, 9: 109.0},
+        source_parquets.get("alt", "/data/source.parquet"),
     )
     write_prediction(
         root,
@@ -72,7 +80,23 @@ def build_predictions(root: Path) -> None:
         2027,
         [2, 9, 5],
         {2: 120.0, 5: 150.0, 9: 190.0},
+        source_parquets.get("bmi", "/data/source.parquet"),
     )
+
+
+def write_identity_parquet(path: Path, *, mismatched: bool = False) -> None:
+    ids = [f"id-{index}" for index in range(10)]
+    if mismatched:
+        ids[5] = "different-patient"
+    pd.DataFrame(
+        {
+            "uid": [f"uid-{index}" for index in range(10)],
+            "id": ids,
+            "split": ["external_validation"] * 10,
+            "image_path_1": [f"left-{index}.jpg" for index in range(10)],
+            "image_path_2": [f"right-{index}.jpg" for index in range(10)],
+        }
+    ).to_parquet(path)
 
 
 class ReducePredictionsTests(unittest.TestCase):
@@ -116,6 +140,60 @@ class ReducePredictionsTests(unittest.TestCase):
         self.assertEqual(layout.indicators, ("bmi", "alt"))
         self.assertTrue(torch.equal(loaded.logits[0, :, 0], torch.tensor([20, 50, 90])))
         self.assertTrue(torch.equal(loaded.logits[0, :, 1], torch.tensor([2, 5, 9])))
+
+    def test_mixed_source_parquets_are_verified_and_preserved(self) -> None:
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            first = root / "original.parquet"
+            second = root / "extra.parquet"
+            write_identity_parquet(first)
+            write_identity_parquet(second)
+            predictions = root / "predictions"
+            build_predictions(
+                predictions,
+                {"alt": str(first), "bmi": str(second)},
+            )
+            output = root / "aggregate.pt"
+            run(
+                parse_args(
+                    [
+                        "--input-dir",
+                        str(predictions),
+                        "--output-file",
+                        str(output),
+                        "--n-components",
+                        "1",
+                    ]
+                )
+            )
+            result = torch.load(output, weights_only=True)
+
+        self.assertIsNone(result["source_parquet"])
+        self.assertEqual(
+            result["source_parquets"],
+            {"alt": str(first.resolve()), "bmi": str(second.resolve())},
+        )
+
+    def test_misaligned_source_parquets_are_rejected(self) -> None:
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            first = root / "original.parquet"
+            second = root / "extra.parquet"
+            write_identity_parquet(first)
+            write_identity_parquet(second, mismatched=True)
+            predictions = root / "predictions"
+            build_predictions(
+                predictions,
+                {"alt": str(first), "bmi": str(second)},
+            )
+            layout = discover_layout(
+                predictions,
+                indicators=None,
+                split=None,
+                seeds=None,
+            )
+            with self.assertRaisesRegex(ValueError, "same patient"):
+                load_prediction_cube(layout, eye="mean")
 
     def test_joint_and_per_seed_pca_shapes(self) -> None:
         logits = torch.arange(60, dtype=torch.float32).reshape(2, 10, 3)
